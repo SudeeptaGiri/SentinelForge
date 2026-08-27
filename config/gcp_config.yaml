@@ -1,0 +1,12 @@
+# Description: Default GCP regions, billing project IDs, and staging sandbox settings.
+# Need: Infra and cost agents must target a consistent, known-safe set of GCP
+#       projects/regions rather than inferring them at runtime.
+# Motive: Centralize environment-specific GCP defaults so sandbox/staging/prod
+#         targets are explicit and auditable.
+
+gcp:
+  billing_project_id: your-billing-project-id
+  default_region: us-central1
+  staging:
+    project_id: your-staging-project-id
+    sandbox_ttl_minutes: 60

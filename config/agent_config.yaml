@@ -1,0 +1,31 @@
+# Description: Agent system prompts, model tiers, and max retry limits.
+# Need: Each ADK sub-agent needs consistent, centrally managed configuration for
+#       which Gemini model tier to use and how it should behave/retry on failure.
+# Motive: Decouple agent behavior tuning from code so prompts/models can be
+#         adjusted without redeploying the service.
+
+agents:
+  supervisor:
+    model: gemini-2.5-pro
+    max_retries: 3
+  spec_agent:
+    model: gemini-2.5-flash
+    max_retries: 2
+  analysis_agent:
+    model: gemini-2.5-pro
+    max_retries: 2
+  code_gen_agent:
+    model: gemini-2.5-pro
+    max_retries: 3
+  cost_agent:
+    model: gemini-2.5-flash
+    max_retries: 2
+  infra_agent:
+    model: gemini-2.5-pro
+    max_retries: 2
+  qa_agent:
+    model: gemini-2.5-pro
+    max_retries: 3
+  pentest_agent:
+    model: gemini-2.5-pro
+    max_retries: 2

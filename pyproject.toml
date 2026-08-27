@@ -1,0 +1,24 @@
+# Description: Dependency & build configuration for the SentinelForge agent system.
+# Need: A single source of truth for Python package dependencies, tooling, and
+#       build metadata so the agent service can be packaged and deployed reproducibly.
+# Motive: Use Poetry to pin ADK, Vertex AI, FastAPI, and MCP client/server libraries
+#         so every environment (local, CI, Agent Engine) resolves identical versions.
+
+[tool.poetry]
+name = "sentinelforge"
+version = "0.1.0"
+description = "Autonomous AI DevSecOps Agent"
+authors = ["SentinelForge Team"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "*"
+uvicorn = "*"
+pydantic = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

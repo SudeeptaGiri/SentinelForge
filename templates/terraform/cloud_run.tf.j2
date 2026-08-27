@@ -1,0 +1,25 @@
+{#
+  Description: Base Terraform HCL template for a Cloud Run v2 service.
+  Need: Every generated app requiring lightweight, autoscaling serverless
+        hosting needs consistent, security-reviewed Terraform, not
+        hand-written HCL per project.
+  Motive: Let the Infra Agent render this template with the approved
+          resource spec instead of generating Terraform from scratch,
+          reducing risk of misconfiguration.
+#}
+resource "google_cloud_run_v2_service" "{{ service_name }}" {
+  name     = "{{ service_name }}"
+  location = "{{ region }}"
+
+  template {
+    containers {
+      image = "{{ image_uri }}"
+      resources {
+        limits = {
+          cpu    = "{{ cpu | default('1') }}"
+          memory = "{{ memory | default('512Mi') }}"
+        }
+      }
+    }
+  }
+}

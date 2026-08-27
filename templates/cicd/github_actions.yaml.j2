@@ -1,0 +1,22 @@
+{#
+  Description: GitHub Actions workflow template for build/test/deploy.
+  Need: Projects hosted on GitHub need an equivalent CI/CD path to Cloud
+        Build, without the Infra Agent hand-writing YAML each time.
+  Motive: Offer a second, GitHub-native CI/CD target rendered from the same
+          approved infra plan as the Cloud Build template.
+#}
+name: {{ workflow_name }}
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t {{ image_uri }} .
+      - name: Run tests
+        run: {{ test_command | default('pytest') }}

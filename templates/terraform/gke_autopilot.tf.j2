@@ -1,0 +1,14 @@
+{#
+  Description: Base Terraform HCL template for a GKE Autopilot cluster.
+  Need: Complex, container-mesh workloads need managed Kubernetes rather than
+        Cloud Run, and hand-authoring GKE Terraform per project is slow and
+        error-prone.
+  Motive: Give the Infra Agent a vetted GKE Autopilot template to render for
+          workloads that exceed Cloud Run's fit, keeping IaC consistent.
+#}
+resource "google_container_cluster" "{{ cluster_name }}" {
+  name     = "{{ cluster_name }}"
+  location = "{{ region }}"
+
+  enable_autopilot = true
+}

@@ -1,0 +1,22 @@
+{#
+  Description: GCP Cloud Build pipeline template (build, test, deploy).
+  Need: Every generated app needs a consistent, security-conscious CI/CD
+        pipeline instead of a bespoke one authored per project.
+  Motive: Let the Infra Agent render this template with the correct image
+          name and deploy target for the current app, standardizing builds.
+#}
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["build", "-t", "{{ image_uri }}", "."]
+  - name: "gcr.io/cloud-builders/docker"
+    args: ["push", "{{ image_uri }}"]
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      [
+        "run", "deploy", "{{ service_name }}",
+        "--image", "{{ image_uri }}",
+        "--region", "{{ region }}",
+      ]
+images:
+  - "{{ image_uri }}"

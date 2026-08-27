@@ -1,0 +1,14 @@
+# Description: Pentest URL allowlists, DAST intensity thresholds, and forbidden actions.
+# Need: Automated security scanning (Strix) must never target unauthorized hosts
+#       or run destructive/aggressive scans without explicit boundaries.
+# Motive: Enforce a hard safety boundary at the config layer so the pentest_agent
+#         cannot be prompted into scanning out-of-scope or production systems.
+
+security:
+  allowlisted_hosts:
+    - "*.staging.internal"
+  dast_intensity: medium # low | medium | high
+  forbidden_actions:
+    - "scan_production_hosts"
+    - "credential_bruteforce"
+    - "destructive_payloads"
