@@ -116,3 +116,15 @@ async def gate_audit_log(pipeline_id: str) -> list[dict]:
     if not session:
         raise HTTPException(status_code=404, detail="Unknown pipeline_id")
     return session.gate.get_audit_log()
+
+
+@router.get("/api/pipeline/{pipeline_id}/gate/{step_id}/detail")
+async def gate_detail(pipeline_id: str, step_id: int) -> dict:
+    """Returns the artifact and summary for a pending or recently resolved gate."""
+    session = state_manager.get_session(pipeline_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Unknown pipeline_id")
+    detail = session.gate.get_gate_detail(step_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="No gate detail found for this step")
+    return detail
