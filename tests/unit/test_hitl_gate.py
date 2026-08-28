@@ -52,5 +52,18 @@ def test_controller_records_gate_on_state():
     assert sm.get("p1").gate_checkpoints[0].gate_name == "Gate 1 - Approach"
 
 
+def test_terminal_channel_empty_input_rejects(monkeypatch):
+    monkeypatch.setattr(builtins, "input", lambda *_: "")
+    d = TerminalApprovalChannel().request_approval(_req())
+    assert d.approved is False
+    assert d.feedback == "rejected"
+
+
+def test_terminal_channel_uppercase_yes_approves(monkeypatch):
+    monkeypatch.setattr(builtins, "input", lambda *_: "YES")
+    d = TerminalApprovalChannel().request_approval(_req())
+    assert d.approved is True
+
+
 def test_channel_is_abstract():
     assert issubclass(TerminalApprovalChannel, ApprovalChannel)
