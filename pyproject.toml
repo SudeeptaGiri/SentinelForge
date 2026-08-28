@@ -15,6 +15,9 @@ python = "^3.11"
 fastapi = "*"
 uvicorn = "*"
 pydantic = "*"
+jinja2 = "*"
+pyyaml = "*"
+mcp = "<2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
