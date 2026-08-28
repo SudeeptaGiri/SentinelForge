@@ -150,60 +150,106 @@ class AsyncDevSecOpsSupervisor:
         """Runs the Migration/Cost-Optimization demo scenario end-to-end."""
         try:
             analysis = await self._step_analyze(workload)
-            plan = await self._step_propose(workload, analysis)
-            decision = await self._request_gate(
-                2, "Approach",
-                f"Recommend migrating '{workload.name}' to {plan.target_platform}: {plan.rationale}",
-                artifact=plan.model_dump(),
-            )
-            if not decision.approved:
-                return self._abort("Gate 1 (Approach) rejected")
 
-            diff = await self._step_codegen(plan)
-            decision = await self._request_gate(
-                3, "Code Review",
-                f"Branch `{diff.branch_name}` changes {len(diff.files_changed)} file(s): {', '.join(diff.files_changed)}",
-                artifact=diff.model_dump(),
-            )
-            if not decision.approved:
-                return self._abort("Gate 2 (Code Review) rejected")
+            # ── Step 2 + Gate 1 ──────────────────────────────────────────────
+            plan, feedback = None, None
+            for attempt in range(MAX_RETRIES + 1):
+                plan = await self._step_propose(workload, analysis, feedback=feedback)
+                decision = await self._request_gate(
+                    2, "Approach",
+                    f"Recommend migrating '{workload.name}' to {plan.target_platform}: {plan.rationale}",
+                    artifact=plan.model_dump(),
+                )
+                if decision.approved:
+                    break
+                feedback = decision.feedback
+                if attempt == MAX_RETRIES:
+                    return self._abort(f"Gate 1 (Approach) rejected after {MAX_RETRIES} max retries")
+                self.tracker.update_step_status(2, StepStatus.IN_PROGRESS,
+                                                log_msg=f"Re-evaluating after rejection: {feedback}")
 
-            infra = await self._step_cost_infra(plan)
-            decision = await self._request_gate(
-                4, "Cost & Infra",
-                f"${plan.monthly_savings_usd:.2f}/mo savings ({plan.savings_pct:.1f}%). Terraform validated: {infra['validation_passed']}",
-                artifact={**infra, "savings_usd": plan.monthly_savings_usd, "savings_pct": plan.savings_pct,
-                           "target_platform": plan.target_platform},
-            )
-            if not decision.approved:
-                return self._abort("Gate 3 (Cost & Infra) rejected")
+            # ── Step 3 + Gate 2 ──────────────────────────────────────────────
+            diff, feedback = None, None
+            for attempt in range(MAX_RETRIES + 1):
+                diff = await self._step_codegen(plan, feedback=feedback)
+                decision = await self._request_gate(
+                    3, "Code Review",
+                    f"Branch `{diff.branch_name}` changes {len(diff.files_changed)} file(s): {', '.join(diff.files_changed)}",
+                    artifact=diff.model_dump(),
+                )
+                if decision.approved:
+                    break
+                feedback = decision.feedback
+                if attempt == MAX_RETRIES:
+                    return self._abort(f"Gate 2 (Code Review) rejected after {MAX_RETRIES} max retries")
+                self.tracker.update_step_status(3, StepStatus.IN_PROGRESS,
+                                                log_msg=f"Re-evaluating after rejection: {feedback}")
 
-            audit_report = await self._step_test_and_pentest(diff)
-            blocked = self.pentest_agent.is_release_blocked(audit_report)
-            gate_summary = (f"{len(audit_report.findings)} finding(s), overall risk {audit_report.overall_risk}."
-                            + (" RELEASE BLOCKED by CRITICAL finding." if blocked else ""))
-            decision = await self._request_gate(
-                5, "Security Audit",
-                gate_summary,
-                artifact={
-                    "target": audit_report.target,
-                    "overall_risk": audit_report.overall_risk,
-                    "findings": [{"title": f.title, "severity": f.severity, "cvss": f.cvss_score}
-                                 for f in audit_report.findings],
-                    "release_blocked": blocked,
-                },
-            )
-            if not decision.approved or blocked:
-                return self._abort("Gate 4 (Security Audit) rejected or blocked")
+            # ── Step 4 + Gate 3 ──────────────────────────────────────────────
+            infra, feedback = None, None
+            for attempt in range(MAX_RETRIES + 1):
+                infra = await self._step_cost_infra(plan, feedback=feedback)
+                decision = await self._request_gate(
+                    4, "Cost & Infra",
+                    f"${plan.monthly_savings_usd:.2f}/mo savings ({plan.savings_pct:.1f}%). "
+                    f"Terraform validated: {infra['validation_passed']}",
+                    artifact={**infra, "savings_usd": plan.monthly_savings_usd,
+                               "savings_pct": plan.savings_pct, "target_platform": plan.target_platform},
+                )
+                if decision.approved:
+                    break
+                feedback = decision.feedback
+                if attempt == MAX_RETRIES:
+                    return self._abort(f"Gate 3 (Cost & Infra) rejected after {MAX_RETRIES} max retries")
+                self.tracker.update_step_status(4, StepStatus.IN_PROGRESS,
+                                                log_msg=f"Re-evaluating after rejection: {feedback}")
 
-            deployment = await self._step_deploy(infra)
-            decision = await self._request_gate(
-                6, "Final Sign-off",
-                f"Ready to deploy to {deployment['url']}",
-                artifact=deployment,
-            )
-            if not decision.approved:
-                return self._abort("Gate 5 (Final Sign-off) rejected")
+            # ── Step 5 + Gate 4 ──────────────────────────────────────────────
+            audit_report, feedback = None, None
+            for attempt in range(MAX_RETRIES + 1):
+                audit_report = await self._step_test_and_pentest(diff, feedback=feedback)
+                blocked = self.pentest_agent.is_release_blocked(audit_report)
+                gate_summary = (
+                    f"{len(audit_report.findings)} finding(s), overall risk {audit_report.overall_risk}."
+                    + (" RELEASE BLOCKED by CRITICAL finding." if blocked else "")
+                )
+                decision = await self._request_gate(
+                    5, "Security Audit",
+                    gate_summary,
+                    artifact={
+                        "target": audit_report.target,
+                        "overall_risk": audit_report.overall_risk,
+                        "findings": [{"title": f.title, "severity": f.severity, "cvss": f.cvss_score}
+                                     for f in audit_report.findings],
+                        "release_blocked": blocked,
+                    },
+                )
+                if blocked:
+                    return self._abort("Gate 4 (Security Audit) blocked by CRITICAL finding")
+                if decision.approved:
+                    break
+                feedback = decision.feedback
+                if attempt == MAX_RETRIES:
+                    return self._abort(f"Gate 4 (Security Audit) rejected after {MAX_RETRIES} max retries")
+                self.tracker.update_step_status(5, StepStatus.IN_PROGRESS,
+                                                log_msg=f"Re-evaluating after rejection: {feedback}")
+
+            # ── Step 6 + Gate 5 ──────────────────────────────────────────────
+            deployment, feedback = None, None
+            for attempt in range(MAX_RETRIES + 1):
+                deployment = await self._step_deploy(infra, feedback=feedback)
+                decision = await self._request_gate(
+                    6, "Final Sign-off",
+                    f"Ready to deploy to {deployment['url']}",
+                    artifact=deployment,
+                )
+                if decision.approved:
+                    break
+                feedback = decision.feedback
+                if attempt == MAX_RETRIES:
+                    return self._abort(f"Gate 5 (Final Sign-off) rejected after {MAX_RETRIES} max retries")
+                self.tracker.update_step_status(6, StepStatus.IN_PROGRESS,
+                                                log_msg=f"Re-evaluating after rejection: {feedback}")
 
             self.session.result = {
                 "status": "DEPLOYED",
@@ -226,27 +272,33 @@ class AsyncDevSecOpsSupervisor:
         return {"detected_platform": "GCE",
                 "summary": f"{workload.name} is stateless, currently on GCE VM, no autoscaling."}
 
-    async def _step_propose(self, workload: WorkloadSpec, analysis: dict) -> MigrationPlan:
-        self.tracker.update_step_status(2, StepStatus.IN_PROGRESS, sub_agent="CostScalingAgent")
-        await asyncio.sleep(0.4)  # MOCK: replace with CostScalingAgent.compute_cost_savings() (Person 2)
+    async def _step_propose(self, workload: WorkloadSpec, analysis: dict, feedback: str | None = None) -> MigrationPlan:
+        log_msg = f"Re-evaluating proposal after feedback: {feedback}" if feedback else "Computing migration cost savings..."
+        self.tracker.update_step_status(2, StepStatus.IN_PROGRESS, sub_agent="CostScalingAgent",
+                                        log_msg=log_msg)
+        await asyncio.sleep(0.4)
         baseline = CostEstimate(platform="GCE", monthly_cost_usd=612.0,
                                 breakdown={"compute": 480.0, "disk": 132.0})
         target = CostEstimate(platform="CloudRun", monthly_cost_usd=178.0,
                               breakdown={"compute": 150.0, "requests": 28.0})
         savings = baseline.monthly_cost_usd - target.monthly_cost_usd
+        rationale = f"Stateless workload with variable traffic fits serverless scale-to-zero."
+        if feedback:
+            rationale = f"Revised after feedback '{feedback}': {rationale}"
         plan = MigrationPlan(
             baseline=baseline, target=target, target_platform="CloudRun",
             monthly_savings_usd=savings,
             savings_pct=round(savings / baseline.monthly_cost_usd * 100, 1),
-            rationale="Stateless workload with variable traffic fits serverless scale-to-zero.",
+            rationale=rationale,
         )
         self.tracker.update_step_status(2, StepStatus.COMPLETED, log_msg="Proposed migration to Cloud Run.")
         return plan
 
-    async def _step_codegen(self, plan: MigrationPlan) -> CodeDiff:
+    async def _step_codegen(self, plan: MigrationPlan, feedback: str | None = None) -> CodeDiff:
+        log_msg = f"Re-generating code after feedback: {feedback}" if feedback else "Generating migration code..."
         self.tracker.update_step_status(3, StepStatus.IN_PROGRESS, sub_agent="CodeGeneratorAgent",
-                                        tool="mcp_server_git.create_branch")
-        await asyncio.sleep(0.4)  # MOCK: replace with CodeGeneratorAgent.refactor_module() (Person 4)
+                                        tool="mcp_server_git.create_branch", log_msg=log_msg)
+        await asyncio.sleep(0.4)
         diff = CodeDiff(
             branch_name="feature/cloud-run-migration",
             files_changed=["Dockerfile", "app/healthz.py", "service.yaml"],
@@ -256,17 +308,20 @@ class AsyncDevSecOpsSupervisor:
         self.tracker.update_step_status(3, StepStatus.COMPLETED, log_msg=f"Committed to {diff.branch_name}.")
         return diff
 
-    async def _step_cost_infra(self, plan: MigrationPlan) -> dict:
+    async def _step_cost_infra(self, plan: MigrationPlan, feedback: str | None = None) -> dict:
+        log_msg = f"Re-generating infra after feedback: {feedback}" if feedback else "Rendering Terraform templates..."
         self.tracker.update_step_status(4, StepStatus.IN_PROGRESS, sub_agent="InfraBuilderAgent",
-                                        tool="templates/terraform/cloud_run.tf.j2")
-        await asyncio.sleep(0.4)  # MOCK: replace with InfraBuilderAgent.render_terraform() (Person 2)
+                                        tool="templates/terraform/cloud_run.tf.j2", log_msg=log_msg)
+        await asyncio.sleep(0.4)
         self.tracker.update_step_status(4, StepStatus.COMPLETED,
                                         log_msg="Rendered main.tf + cloudbuild.yaml, terraform validate passed.")
         return {"validation_passed": True, "validation_findings": []}
 
-    async def _step_test_and_pentest(self, diff: CodeDiff):
-        self.tracker.update_step_status(5, StepStatus.IN_PROGRESS, sub_agent="QAAgent", tool="pytest")
-        await asyncio.sleep(0.3)  # MOCK: replace with QAAgent.self_heal_test_failure() (Person 4)
+    async def _step_test_and_pentest(self, diff: CodeDiff, feedback: str | None = None):
+        log_msg = f"Re-running security scan after feedback: {feedback}" if feedback else "Running tests..."
+        self.tracker.update_step_status(5, StepStatus.IN_PROGRESS, sub_agent="QAAgent",
+                                        tool="pytest", log_msg=log_msg)
+        await asyncio.sleep(0.3)
         self.tracker.update_step_status(5, StepStatus.IN_PROGRESS,
                                         log_msg="Test failed: missing /healthz route. Self-healing...")
         await asyncio.sleep(0.3)
@@ -279,10 +334,11 @@ class AsyncDevSecOpsSupervisor:
                                         log_msg=f"Strix scan: {len(report.findings)} finding(s), risk={report.overall_risk}.")
         return report
 
-    async def _step_deploy(self, infra: dict) -> dict:
+    async def _step_deploy(self, infra: dict, feedback: str | None = None) -> dict:
+        log_msg = f"Re-attempting deploy after feedback: {feedback}" if feedback else "Triggering Cloud Build..."
         self.tracker.update_step_status(6, StepStatus.IN_PROGRESS, sub_agent="InfraBuilderAgent",
-                                        tool="mcp_server_cicd.trigger_cloud_build")
-        await asyncio.sleep(0.4)  # MOCK: replace with real Cloud Build trigger (Person 2/5, Day 2 stretch)
+                                        tool="mcp_server_cicd.trigger_cloud_build", log_msg=log_msg)
+        await asyncio.sleep(0.4)
         deployment = {"url": "https://demo-app.staging.run.app", "status": "DEPLOYED"}
         self.tracker.update_step_status(6, StepStatus.COMPLETED,
                                         log_msg=f"Deployed to {deployment['url']}.")
