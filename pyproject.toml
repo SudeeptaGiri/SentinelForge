@@ -16,6 +16,9 @@ fastapi = "*"
 uvicorn = "*"
 pydantic = "*"
 google-genai = "*"
+jinja2 = "*"
+pyyaml = "*"
+mcp = "<2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
