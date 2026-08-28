@@ -15,6 +15,7 @@ python = "^3.11"
 fastapi = "*"
 uvicorn = "*"
 pydantic = "*"
+google-genai = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
