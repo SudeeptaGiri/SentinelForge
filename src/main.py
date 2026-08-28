@@ -1,14 +1,19 @@
 """Service entrypoint (FastAPI / Agent Engine server).
 
-Description: Exposes REST/gRPC endpoints consumed by the Gemini Enterprise UI
-             and external webhooks (e.g. Buganizer, GitHub) to start agent runs.
-Need: The multi-agent system requires a single, well-defined process boundary
-      that external clients and Vertex AI Agent Engine can invoke.
-Motive: Provide the thin entrypoint that wires HTTP requests to the
-        `DevSecOpsSupervisor` orchestrator without embedding business logic here.
+Exposes the health endpoint and wires an agent session to the supervisor.
 """
 
+from __future__ import annotations
+
 from fastapi import FastAPI
+
+from src.models.schemas import RunStatus, WorkloadSpec
+from src.orchestrator.gemini_client import GeminiClient
+from src.orchestrator.hitl_gate import (
+    ApprovalChannel, HITLGateController, TerminalApprovalChannel,
+)
+from src.orchestrator.state_manager import SessionStateManager
+from src.orchestrator.supervisor import DevSecOpsSupervisor
 
 app = FastAPI(title="SentinelForge DevSecOps Agent")
 
@@ -18,6 +23,21 @@ def health_check() -> dict:
     return {"status": "ok"}
 
 
-def run_agent_session() -> None:
-    """Entrypoint that starts a supervised agent session (see orchestrator/supervisor.py)."""
-    raise NotImplementedError
+def run_agent_session(
+    channel: ApprovalChannel | None = None,
+    workload: WorkloadSpec | None = None,
+    pipeline_id: str = "demo",
+) -> RunStatus:
+    """Start a supervised agent session for the migration/cost demo."""
+    state = SessionStateManager()
+    gate = HITLGateController(channel or TerminalApprovalChannel(), state)
+    supervisor = DevSecOpsSupervisor(gate=gate, state=state, gemini=GeminiClient())
+    return supervisor.route(
+        "Migrate my legacy GCE app to cut monthly cost",
+        pipeline_id=pipeline_id,
+        workload=workload,
+    )
+
+
+if __name__ == "__main__":
+    run_agent_session()
