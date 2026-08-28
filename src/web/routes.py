@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from src.models.schemas import WorkloadSpec
 from src.orchestrator.state_manager import SessionStateManager
-from src.orchestrator.supervisor import PIPELINE_STEPS, DevSecOpsSupervisor
+from src.orchestrator.supervisor import PIPELINE_STEPS, AsyncDevSecOpsSupervisor
 
 router = APIRouter()
 state_manager = SessionStateManager()
@@ -56,7 +56,7 @@ async def index(request: Request) -> HTMLResponse:
 @router.post("/api/pipeline/start")
 async def start_pipeline() -> dict:
     session = state_manager.create_session(PIPELINE_STEPS)
-    supervisor = DevSecOpsSupervisor(session)
+    supervisor = AsyncDevSecOpsSupervisor(session)
 
     async def _run() -> None:
         try:
