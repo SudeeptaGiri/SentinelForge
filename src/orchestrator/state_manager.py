@@ -1,20 +1,91 @@
-"""Vertex Agent Engine session state & conversation history.
+"""In-memory session state, gate checkpoints, and run history.
 
-Description: Manages conversation memory, session checkpoints, and state
-             persistence on Vertex AI Agent Engine.
-Need: Long-running, multi-step agent workflows (spanning analysis, code-gen,
-      cost, infra, QA, and security stages) must survive process restarts and
-      resume from the last approved checkpoint.
-Motive: Provide a single abstraction over Agent Engine's managed state so
-        other components never touch storage/session APIs directly.
+Description: Tracks each pipeline run's status, current step, gate decisions,
+             and an event history. In-memory for the hackathon demo; the same
+             interface can later front Vertex AI Agent Engine persistence.
 """
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+from src.models.checkpoints import GateCheckpoint
+from src.models.schemas import GateDecision, RunStatus
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class RunState:
+    pipeline_id: str
+    status: RunStatus = RunStatus.PENDING
+    current_step_id: int | None = None
+    history: list[dict] = field(default_factory=list)
+    gate_checkpoints: list[GateCheckpoint] = field(default_factory=list)
 
 
 class SessionStateManager:
     """Persists and retrieves agent session state and checkpoints."""
 
+    def __init__(self) -> None:
+        self._runs: dict[str, RunState] = {}
+        self._checkpoints: dict[str, dict] = {}
+
+    def create_run(self, pipeline_id: str) -> RunState:
+        run = RunState(pipeline_id=pipeline_id)
+        self._runs[pipeline_id] = run
+        self._event(run, "run_created")
+        return run
+
+    def get(self, pipeline_id: str) -> RunState:
+        return self._runs[pipeline_id]
+
+    def set_current(self, pipeline_id: str, step_id: int) -> None:
+        run = self._runs[pipeline_id]
+        run.current_step_id = step_id
+        self._event(run, "step_started", step_id=step_id)
+
+    def set_status(self, pipeline_id: str, status: RunStatus) -> None:
+        run = self._runs[pipeline_id]
+        run.status = status
+        self._event(run, "status_changed", status=status.value)
+
+    def record_gate(self, pipeline_id: str, decision: GateDecision, gate_name: str) -> None:
+        run = self._runs[pipeline_id]
+        run.gate_checkpoints.append(
+            GateCheckpoint(
+                gate_name=gate_name,
+                session_id=pipeline_id,
+                payload={"step_id": decision.step_id, "feedback": decision.feedback},
+                approved=decision.approved,
+            )
+        )
+        self._event(run, "gate_decision", gate=gate_name,
+                    approved=decision.approved, feedback=decision.feedback)
+
+    def record_error(self, pipeline_id: str, step_id: int, error: str) -> None:
+        run = self._runs[pipeline_id]
+        self._event(run, "error", step_id=step_id, error=error)
+
+    def to_dict(self, pipeline_id: str) -> dict:
+        run = self._runs[pipeline_id]
+        return {
+            "pipeline_id": run.pipeline_id,
+            "status": run.status.value,
+            "current_step_id": run.current_step_id,
+            "history": run.history,
+            "gate_checkpoints": [c.model_dump() for c in run.gate_checkpoints],
+        }
+
+    # --- scaffold-compatible checkpoint API ---
     def save_checkpoint(self, session_id: str, payload: dict) -> None:
-        raise NotImplementedError
+        self._checkpoints[session_id] = payload
 
     def load_checkpoint(self, session_id: str) -> dict:
-        raise NotImplementedError
+        return self._checkpoints[session_id]
+
+    def _event(self, run: RunState, event: str, **fields) -> None:
+        run.history.append({"ts": _now(), "event": event, **fields})
