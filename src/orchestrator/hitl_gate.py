@@ -57,6 +57,12 @@ class WebApprovalChannel(ApprovalChannel):
     Design: set run status WAITING_APPROVAL, block on a threading.Event; a
     FastAPI `POST /runs/{id}/gates/{gate}/decision` endpoint sets the decision
     and the event, unblocking the pipeline thread.
+
+    NOTE (Day-2): The ApprovalChannel interface will need to be extended with
+    `pipeline_id: str` as a parameter to `request_approval` when implementing
+    this channel, so the threading.Event and state.set_status call can be keyed
+    by the correct run. TerminalApprovalChannel and ScriptedApprovalChannel
+    can silently accept and ignore it.
     """
 
     def request_approval(self, request: GateRequest) -> GateDecision:

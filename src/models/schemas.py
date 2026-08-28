@@ -2,6 +2,12 @@
 
 Single source of truth for objects that flow between every agent, the
 supervisor, and the HITL gates. Everyone imports from here.
+
+Step-seam contracts: at the run_fn boundary the pipeline expects the types
+defined in THIS file. Use CostEstimate (not cost_models.CostComparison) and
+AuditReport (not security_models.SecurityAuditReport) as the returned artifact.
+Scaffold domain models may be used internally by agents for richer data but
+must be converted before being returned to the pipeline.
 """
 
 from __future__ import annotations
