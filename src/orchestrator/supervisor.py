@@ -18,6 +18,7 @@ import logging
 from src.models.schemas import (
     CodeDiff,
     CostEstimate,
+    GateDecision,
     GateRequest,
     MigrationPlan,
     PipelineContext,
@@ -150,29 +151,58 @@ class AsyncDevSecOpsSupervisor:
         try:
             analysis = await self._step_analyze(workload)
             plan = await self._step_propose(workload, analysis)
-            if not await self._request_gate(2, "Approach",
-                    f"Recommend migrating '{workload.name}' to {plan.target_platform}: {plan.rationale}"):
+            decision = await self._request_gate(
+                2, "Approach",
+                f"Recommend migrating '{workload.name}' to {plan.target_platform}: {plan.rationale}",
+                artifact=plan.model_dump(),
+            )
+            if not decision.approved:
                 return self._abort("Gate 1 (Approach) rejected")
 
             diff = await self._step_codegen(plan)
-            if not await self._request_gate(3, "Code Review",
-                    f"Branch `{diff.branch_name}` changes {len(diff.files_changed)} file(s): {', '.join(diff.files_changed)}"):
+            decision = await self._request_gate(
+                3, "Code Review",
+                f"Branch `{diff.branch_name}` changes {len(diff.files_changed)} file(s): {', '.join(diff.files_changed)}",
+                artifact=diff.model_dump(),
+            )
+            if not decision.approved:
                 return self._abort("Gate 2 (Code Review) rejected")
 
             infra = await self._step_cost_infra(plan)
-            if not await self._request_gate(4, "Cost & Infra",
-                    f"${plan.monthly_savings_usd:.2f}/mo savings ({plan.savings_pct:.1f}%). Terraform validated: {infra['validation_passed']}"):
+            decision = await self._request_gate(
+                4, "Cost & Infra",
+                f"${plan.monthly_savings_usd:.2f}/mo savings ({plan.savings_pct:.1f}%). Terraform validated: {infra['validation_passed']}",
+                artifact={**infra, "savings_usd": plan.monthly_savings_usd, "savings_pct": plan.savings_pct,
+                           "target_platform": plan.target_platform},
+            )
+            if not decision.approved:
                 return self._abort("Gate 3 (Cost & Infra) rejected")
 
             audit_report = await self._step_test_and_pentest(diff)
             blocked = self.pentest_agent.is_release_blocked(audit_report)
             gate_summary = (f"{len(audit_report.findings)} finding(s), overall risk {audit_report.overall_risk}."
                             + (" RELEASE BLOCKED by CRITICAL finding." if blocked else ""))
-            if not await self._request_gate(5, "Security Audit", gate_summary) or blocked:
+            decision = await self._request_gate(
+                5, "Security Audit",
+                gate_summary,
+                artifact={
+                    "target": audit_report.target,
+                    "overall_risk": audit_report.overall_risk,
+                    "findings": [{"title": f.title, "severity": f.severity, "cvss": f.cvss_score}
+                                 for f in audit_report.findings],
+                    "release_blocked": blocked,
+                },
+            )
+            if not decision.approved or blocked:
                 return self._abort("Gate 4 (Security Audit) rejected or blocked")
 
             deployment = await self._step_deploy(infra)
-            if not await self._request_gate(6, "Final Sign-off", f"Ready to deploy to {deployment['url']}"):
+            decision = await self._request_gate(
+                6, "Final Sign-off",
+                f"Ready to deploy to {deployment['url']}",
+                artifact=deployment,
+            )
+            if not decision.approved:
                 return self._abort("Gate 5 (Final Sign-off) rejected")
 
             self.session.result = {
@@ -258,9 +288,17 @@ class AsyncDevSecOpsSupervisor:
                                         log_msg=f"Deployed to {deployment['url']}.")
         return deployment
 
-    async def _request_gate(self, step_id: int, gate_name: str, summary: str) -> bool:
-        decision = await self.gate.request_gate_approval(step_id, gate_name, summary)
-        return decision.approved
+    async def _request_gate(
+        self,
+        step_id: int,
+        gate_name: str,
+        summary: str,
+        artifact: dict | None = None,
+    ) -> GateDecision:
+        decision = await self.gate.request_gate_approval(
+            step_id, gate_name, summary, artifact=artifact
+        )
+        return decision
 
     def _abort(self, reason: str) -> dict:
         self.session.result = {"status": "ABORTED", "reason": reason}
