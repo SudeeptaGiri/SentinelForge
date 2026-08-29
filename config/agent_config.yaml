@@ -26,6 +26,9 @@ agents:
   qa_agent:
     model: gemini-2.5-pro
     max_retries: 3
+  review_agent:
+    model: gemini-2.5-pro
+    max_retries: 2
   pentest_agent:
     model: gemini-2.5-pro
     max_retries: 2

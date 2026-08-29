@@ -21,6 +21,7 @@ from typing import Any
 import yaml
 
 from src.mcp_servers.server_git import GitOperations
+from src.utils.genai_client import build_genai_client
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,13 @@ class QAAgent:
         
         Args:
             model: Gemini model to use (default from agent_config.yaml)
-            api_key: Gemini API key (reads from env if not provided)
+            api_key: Deprecated for Person 4 flow (ADC is required)
         """
         self._model = model
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
         self._client = None
+        self._auth_mode = None
+        self._project = None
         
         # Load config
         config_path = Path(__file__).parents[2] / "config" / "agent_config.yaml"
@@ -76,14 +79,19 @@ class QAAgent:
         else:
             self.max_retries = 3
         
-        # Initialize Gemini client
-        if self._api_key:
-            try:
-                from google import genai
-                self._client = genai.Client(api_key=self._api_key)
-                logger.info(f"QAAgent initialized with {self._model}")
-            except Exception as exc:
-                logger.warning(f"Gemini SDK unavailable: {exc}")
+        # Initialize Gemini client with ADC-first auth.
+        self._client, self._auth_mode, self._project = build_genai_client(api_key=self._api_key)
+        if self._auth_mode != "adc":
+            if self._api_key:
+                logger.warning("QAAgent ignores API key auth; configure ADC instead")
+            self._client = None
+            self._auth_mode = None
+        if self._client:
+            logger.info(
+                "QAAgent initialized with %s using %s auth",
+                self._model,
+                self._auth_mode,
+            )
         
         self.healing_history: list[HealingAttempt] = []
     
@@ -91,6 +99,102 @@ class QAAgent:
     def enabled(self) -> bool:
         """Check if Gemini client is available."""
         return self._client is not None
+    
+    def generate_and_run_tests(
+        self,
+        code_path: str,
+        plan_text: str | None = None
+    ) -> dict[str, Any]:
+        """Generate test cases from plan and run them with self-healing.
+        
+        Args:
+            code_path: Path to the code directory
+            plan_text: Plan text content for test generation
+            
+        Returns:
+            Dictionary with test results and healing metadata
+        """
+        code_path = Path(code_path)
+        
+        # Generate tests if plan provided
+        if plan_text and self.enabled:
+            logger.info("Generating test cases from plan...")
+            self._generate_test_cases(code_path, plan_text)
+        
+        # Run tests with self-healing
+        return self.run_tests_with_self_heal(str(code_path))
+    
+    def _generate_test_cases(self, code_path: Path, plan_text: str) -> None:
+        """Generate test cases based on plan text."""
+        tests_dir = code_path / "tests"
+        tests_dir.mkdir(exist_ok=True)
+        
+        # Create __init__.py
+        (tests_dir / "__init__.py").write_text("")
+        
+        # Read actual generated app to understand its structure
+        app_file = code_path / "app.py"
+        if not app_file.exists():
+            logger.error("app.py not found, cannot generate tests")
+            return
+        
+        app_code = app_file.read_text()
+        
+        prompt = f"""Generate pytest test cases based on this plan and the actual generated code.
+
+PLAN:
+{plan_text}
+
+ACTUAL GENERATED CODE (app.py):
+```python
+{app_code}
+```
+
+CRITICAL REQUIREMENTS:
+1. Import app correctly: from app import app (since app.py is in parent directory)
+2. Use pytest fixture for Flask test client
+3. Test /healthz endpoint returns 200 and {{"status": "healthy"}}
+4. Test hello_world() function if it exists
+5. Use sys.path.insert to ensure imports work from tests/ subdirectory
+6. Keep tests simple and focused
+
+EXAMPLE STRUCTURE:
+```python
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import pytest
+from app import app
+
+@pytest.fixture
+def client():
+    app.config['TESTING'] = True
+    with app.test_client() as client:
+        yield client
+
+def test_healthz(client):
+    response = client.get('/healthz')
+    assert response.status_code == 200
+    assert response.json == {{"status": "healthy"}}
+```
+
+Return ONLY the complete test_app.py code following this pattern. No explanations."""
+        
+        try:
+            response = self._client.models.generate_content(model=self._model, contents=prompt)
+            test_code = response.text.strip()
+            
+            if "```python" in test_code:
+                test_code = test_code.split("```python")[1].split("```")[0].strip()
+            elif "```" in test_code:
+                test_code = test_code.split("```")[1].split("```")[0].strip()
+            
+            test_file = tests_dir / "test_app.py"
+            test_file.write_text(test_code)
+            logger.info(f"✅ Generated test cases in {test_file}")
+        except Exception as e:
+            logger.error(f"Failed to generate tests: {e}")
     
     def run_tests_with_self_heal(
         self, 
@@ -205,13 +309,18 @@ class QAAgent:
         Returns:
             List of failed test names
         """
-        failed = []
-        # Pattern: FAILED tests/test_file.py::test_name
-        pattern = r"FAILED\s+tests/[\w/]+\.py::(\w+)"
-        matches = re.findall(pattern, output)
-        failed.extend(matches)
-        
-        return failed
+        failed: list[str] = []
+
+        # Pattern A: FAILED tests/test_file.py::test_name
+        prefix_pattern = r"FAILED\s+tests[\\/][\w\\/]+\.py::(\w+)"
+        failed.extend(re.findall(prefix_pattern, output))
+
+        # Pattern B: tests/test_file.py::test_name FAILED
+        suffix_pattern = r"tests[\\/][\w\\/]+\.py::(\w+)\s+FAILED"
+        failed.extend(re.findall(suffix_pattern, output))
+
+        # Preserve order while removing duplicates.
+        return list(dict.fromkeys(failed))
     
     def _analyze_and_heal(self, code_path: Path, result: TestResult) -> bool:
         """Analyze test failures and apply healing fix.
@@ -230,13 +339,13 @@ class QAAgent:
             return False
         
         logger.info(f"📋 Error context: {error_context[:200]}...")
-        
-        if self.enabled:
-            # Use Gemini to generate intelligent fix
-            fix_code = self._generate_fix_with_gemini(code_path, error_context, result.output)
-        else:
-            # Fallback: Pattern-based fix
-            fix_code = self._generate_fix_fallback(code_path, error_context)
+
+        if not self.enabled:
+            logger.error("Gemini ADC auth unavailable; self-healing fallback is disabled")
+            return False
+
+        # Use Gemini to generate intelligent fix
+        fix_code = self._generate_fix_with_gemini(code_path, error_context, result.output)
         
         if not fix_code:
             logger.error("Failed to generate fix")
@@ -342,7 +451,10 @@ Return ONLY the complete fixed app.py file content, no explanations or markdown.
             return None
     
     def _generate_fix_fallback(self, code_path: Path, error_context: str) -> str | None:
-        """Generate fix using pattern matching (fallback when Gemini unavailable).
+        """Deprecated fallback fixer retained for backward compatibility.
+
+        Person 4 now runs in ADC-only mode and this method is not used in the
+        active self-healing path.
         
         Args:
             code_path: Path to the code directory
@@ -418,30 +530,45 @@ def healthz():
         try:
             app_file = code_path / "app.py"
             
-            # Backup current version (in git)
-            git = GitOperations(str(code_path))
+            # Backup current version (simple file backup, not git)
+            backup_file = code_path / "app.py.backup"
+            if app_file.exists():
+                backup_file.write_text(app_file.read_text())
             
             # Write the fix
             app_file.write_text(fix_code)
             
-            # Commit the fix
-            commit_msg = f"Self-healing fix: {error_type[:50]}"
-            commit_sha = git.commit_changes(["app.py"], commit_msg)
-            
-            if commit_sha:
-                logger.info(f"✅ Fix applied and committed: {commit_sha[:8]}")
-                self.healing_history.append(
-                    HealingAttempt(
-                        attempt_number=len(self.healing_history) + 1,
-                        error_type=error_type,
-                        fix_applied=commit_msg,
-                        success=True
-                    )
-                )
-                return True
+            # Save healing record to file
+            healing_file = code_path / "HEALING_LOG.txt"
+            healing_entry = f"""
+{'=' * 70}
+HEALING ATTEMPT #{len(self.healing_history) + 1}
+{'=' * 70}
+Error Type: {error_type[:100]}
+Fix Applied: {error_type[:50]}
+Timestamp: {__import__('datetime').datetime.now().isoformat()}
+Status: Success
+{'=' * 70}
+
+"""
+            # Append to healing log
+            if healing_file.exists():
+                current = healing_file.read_text()
+                healing_file.write_text(current + healing_entry)
             else:
-                logger.error("Failed to commit fix")
-                return False
+                healing_file.write_text("SELF-HEALING LOG\n" + "=" * 70 + "\n" + healing_entry)
+            
+            logger.info(f"✅ Fix applied and logged to {healing_file}")
+            
+            self.healing_history.append(
+                HealingAttempt(
+                    attempt_number=len(self.healing_history) + 1,
+                    error_type=error_type,
+                    fix_applied=f"Fix applied: {error_type[:50]}",
+                    success=True
+                )
+            )
+            return True
                 
         except Exception as exc:
             logger.error(f"Failed to apply fix: {exc}")

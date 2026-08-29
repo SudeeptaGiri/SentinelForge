@@ -56,7 +56,16 @@ async def index(request: Request) -> HTMLResponse:
 @router.post("/api/pipeline/start")
 async def start_pipeline() -> dict:
     session = state_manager.create_session(PIPELINE_STEPS)
-    supervisor = AsyncDevSecOpsSupervisor(session)
+    try:
+        supervisor = AsyncDevSecOpsSupervisor(session)
+    except ModuleNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Pipeline dependencies are missing. Install project dependencies "
+                "(including 'mcp') and restart the server."
+            ),
+        ) from exc
 
     async def _run() -> None:
         try:
