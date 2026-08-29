@@ -1,3 +1,5 @@
+import asyncio as _asyncio
+
 from src.models.schemas import GateDecision, PipelineContext, PipelineStep, RunStatus, WorkloadSpec
 from src.orchestrator.gemini_client import GeminiClient
 from src.orchestrator.hitl_gate import HITLGateController, ScriptedApprovalChannel
@@ -75,3 +77,80 @@ def test_route_classifies_then_runs(capsys):
     sup = DevSecOpsSupervisor(gate=gate, state=state, gemini=GeminiClient(api_key=None),
                               steps=build_default_steps())
     assert sup.route("cut my cloud bill", pipeline_id="p1", workload=WL) == RunStatus.COMPLETED
+
+
+def _run_async(coro):
+    return _asyncio.run(coro)
+
+
+def _make_async_session():
+    from src.orchestrator.state_manager import SessionStateManager
+    from src.orchestrator.supervisor import PIPELINE_STEPS
+    sm = SessionStateManager()
+    session = sm.create_session(PIPELINE_STEPS)
+    return session
+
+
+def test_async_supervisor_retries_on_rejection():
+    """Rejected gate triggers step re-run with feedback; second attempt approved."""
+    session = _make_async_session()
+    feedback_seen = []
+
+    async def _scenario():
+        from src.orchestrator.supervisor import AsyncDevSecOpsSupervisor
+        sup = AsyncDevSecOpsSupervisor(session)
+
+        # Patch _step_propose to record feedback
+        original_propose = sup._step_propose
+        async def patched_propose(workload, analysis, feedback=None):
+            feedback_seen.append(feedback)
+            return await original_propose(workload, analysis, feedback=feedback)
+        sup._step_propose = patched_propose
+
+        # First gate: reject; second gate: approve all remaining
+        call_count = [0]
+        async def patched_gate(step_id, gate_name, summary, artifact=None):
+            call_count[0] += 1
+            if step_id == 2 and call_count[0] == 1:
+                from src.models.schemas import GateDecision
+                return GateDecision(step_id=step_id, approved=False, feedback="use GKE instead")
+            from src.models.schemas import GateDecision
+            return GateDecision(step_id=step_id, approved=True)
+        sup._request_gate = patched_gate
+
+        return await sup.run_pipeline(
+            __import__('src.models.schemas', fromlist=['WorkloadSpec']).WorkloadSpec(
+                name="test-app", cpu_cores=4, ram_gb=16,
+                disk_gb=100, monthly_requests=500_000, is_stateful=False
+            )
+        )
+
+    result = _run_async(_scenario())
+    assert result["status"] == "DEPLOYED"
+    # First propose call has None feedback; second has the rejection feedback
+    assert None in feedback_seen
+    assert "use GKE instead" in feedback_seen
+
+
+def test_async_supervisor_aborts_after_max_retries():
+    """After MAX_RETRIES+1 rejections on the same step, pipeline is ABORTED."""
+    session = _make_async_session()
+
+    async def _scenario():
+        from src.orchestrator.supervisor import AsyncDevSecOpsSupervisor
+        sup = AsyncDevSecOpsSupervisor(session)
+
+        async def always_reject(step_id, gate_name, summary, artifact=None):
+            from src.models.schemas import GateDecision
+            return GateDecision(step_id=step_id, approved=False, feedback="never good enough")
+        sup._request_gate = always_reject
+
+        from src.models.schemas import WorkloadSpec
+        return await sup.run_pipeline(
+            WorkloadSpec(name="x", cpu_cores=2, ram_gb=8,
+                         disk_gb=50, monthly_requests=100_000, is_stateful=False)
+        )
+
+    result = _run_async(_scenario())
+    assert result["status"] == "ABORTED"
+    assert "max retries" in result["reason"].lower()

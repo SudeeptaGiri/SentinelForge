@@ -9,16 +9,32 @@ const resultBox = document.getElementById("result-box");
 const progressFill = document.getElementById("progress-fill");
 const progressLabel = document.getElementById("progress-label");
 
+// Gate modal elements
 const gateModal = document.getElementById("gate-modal");
 const gateTitle = document.getElementById("gate-title");
 const gateSummary = document.getElementById("gate-summary");
 const gateApproveBtn = document.getElementById("gate-approve");
 const gateRejectBtn = document.getElementById("gate-reject");
 
+// Rejection reason modal elements
+const rejectModal = document.getElementById("reject-modal");
+const rejectGateTitle = document.getElementById("reject-gate-title");
+const rejectArtifact = document.getElementById("reject-artifact");
+const rejectReason = document.getElementById("reject-reason");
+const rejectConfirmBtn = document.getElementById("reject-confirm-btn");
+const rejectCancelBtn = document.getElementById("reject-cancel-btn");
+
+// ── Event listeners ───────────────────────────────────────────────────────────
 startBtn.addEventListener("click", startPipeline);
 gateApproveBtn.addEventListener("click", () => submitGateDecision(true));
-gateRejectBtn.addEventListener("click", () => submitGateDecision(false));
+gateRejectBtn.addEventListener("click", openRejectModal);
+rejectCancelBtn.addEventListener("click", closeRejectModal);
+rejectConfirmBtn.addEventListener("click", confirmReject);
+rejectReason.addEventListener("input", () => {
+  rejectConfirmBtn.disabled = rejectReason.value.trim().length === 0;
+});
 
+// ── Pipeline start ────────────────────────────────────────────────────────────
 async function startPipeline() {
   startBtn.disabled = true;
   resultBox.classList.add("hidden");
@@ -38,6 +54,7 @@ function attachEventStream(id) {
   };
 }
 
+// ── State rendering ───────────────────────────────────────────────────────────
 function renderState(state) {
   progressFill.style.width = `${state.pipeline_progress_pct}%`;
   progressLabel.textContent = `${state.pipeline_progress_pct}% complete`;
@@ -61,6 +78,7 @@ function renderState(state) {
   fetchAndMaybeShowResult();
 }
 
+// ── Gate modal (approval) ─────────────────────────────────────────────────────
 function openGateModal(step) {
   pendingGateStepId = step.step_id;
   gateTitle.textContent = `Confirm: ${step.name}`;
@@ -68,17 +86,66 @@ function openGateModal(step) {
   gateModal.classList.remove("hidden");
 }
 
-async function submitGateDecision(approved) {
+async function submitGateDecision(approved, feedback = null) {
   if (!pendingGateStepId || !pipelineId) return;
   gateModal.classList.add("hidden");
   await fetch(`/api/pipeline/${pipelineId}/gate/${pendingGateStepId}/decision`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approved, feedback: approved ? null : "Rejected from UI" }),
+    body: JSON.stringify({ approved, feedback }),
   });
   pendingGateStepId = null;
 }
 
+// ── Rejection reason modal ────────────────────────────────────────────────────
+async function openRejectModal() {
+  if (!pendingGateStepId || !pipelineId) return;
+  gateModal.classList.add("hidden");
+
+  // Fetch the step artifact from the backend
+  let detail = null;
+  try {
+    const res = await fetch(`/api/pipeline/${pipelineId}/gate/${pendingGateStepId}/detail`);
+    if (res.ok) {
+      detail = await res.json();
+    }
+  } catch (_) {
+    // Fallback: show the summary text already in the modal
+  }
+
+  rejectGateTitle.textContent = detail
+    ? `Gate: ${detail.gate_name}`
+    : gateTitle.textContent;
+
+  rejectArtifact.textContent = detail && detail.artifact && Object.keys(detail.artifact).length
+    ? JSON.stringify(detail.artifact, null, 2)
+    : (detail && detail.summary) || gateSummary.textContent || "(no artifact details available)";
+
+  // Reset form
+  rejectReason.value = "";
+  rejectConfirmBtn.disabled = true;
+  rejectModal.classList.remove("hidden");
+  rejectReason.focus();
+}
+
+function closeRejectModal() {
+  rejectModal.classList.add("hidden");
+  rejectReason.value = "";
+  rejectConfirmBtn.disabled = true;
+  // Restore the gate modal so the user can reconsider
+  gateModal.classList.remove("hidden");
+}
+
+async function confirmReject() {
+  const reason = rejectReason.value.trim();
+  if (!reason) return;
+  rejectModal.classList.add("hidden");
+  rejectReason.value = "";
+  rejectConfirmBtn.disabled = true;
+  await submitGateDecision(false, reason);
+}
+
+// ── Result polling ────────────────────────────────────────────────────────────
 async function fetchAndMaybeShowResult() {
   if (!pipelineId) return;
   const res = await fetch(`/api/pipeline/${pipelineId}/state`);

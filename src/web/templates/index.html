@@ -64,6 +64,36 @@
     </div>
   </div>
 
+  <!-- Rich rejection modal — shown when user clicks Reject in gate modal -->
+  <div id="reject-modal" class="modal hidden">
+    <div class="modal-card reject-modal-card">
+      <h3>Reject Step</h3>
+      <p id="reject-gate-title" class="muted"></p>
+
+      <div class="reject-detail-section">
+        <h4 class="reject-section-label">Step Output</h4>
+        <div id="reject-artifact" class="artifact-scroll"></div>
+      </div>
+
+      <div class="reject-reason-section">
+        <label for="reject-reason" class="reject-reason-label">
+          Rejection reason <span class="required-star">*</span>
+        </label>
+        <textarea
+          id="reject-reason"
+          class="reject-textarea"
+          rows="3"
+          placeholder="Describe what should change — e.g. 'Use GKE instead of Cloud Run', 'Add rate limiting', 'Fix the critical CVE first'..."
+        ></textarea>
+      </div>
+
+      <div class="modal-actions">
+        <button id="reject-cancel-btn" class="btn btn-secondary">Cancel</button>
+        <button id="reject-confirm-btn" class="btn btn-danger" disabled>Confirm Reject</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>
