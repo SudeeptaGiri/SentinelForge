@@ -317,50 +317,57 @@ class AsyncDevSecOpsSupervisor:
 
     async def _step_codegen(self, plan: MigrationPlan, feedback: str | None = None) -> CodeDiff:
         self.tracker.update_step_status(3, StepStatus.IN_PROGRESS, sub_agent="CodeGeneratorAgent",
-                                        tool="mcp_server_git.create_branch")
-        await asyncio.sleep(0.4)  # MOCK: replace with CodeGeneratorAgent.refactor_module() (Person 4)
-        # MOCK file contents — once CodeGeneratorAgent is live, this becomes its real diff output.
-        # Reviewer feedback is appended as a comment so the regenerated mock reflects the request.
-        note = f"\n# Revision requested: {feedback}" if feedback else ""
-        file_contents = {
-            "Dockerfile": (
-                "FROM python:3.11-slim\n"
-                "WORKDIR /app\n"
-                "COPY requirements.txt .\n"
-                "RUN pip install --no-cache-dir -r requirements.txt\n"
-                "COPY . .\n"
-                f"CMD [\"gunicorn\", \"-b\", \"0.0.0.0:8080\", \"app:app\"]{note}\n"
-            ),
-            "app/healthz.py": (
-                "from flask import Blueprint, jsonify\n\n"
-                "healthz_bp = Blueprint('healthz', __name__)\n\n"
-                "@healthz_bp.route('/healthz')\n"
-                "def healthz():\n"
-                "    return jsonify({'ok': True})\n"
-                f"{note}\n"
-            ),
-            "service.yaml": (
-                "apiVersion: serving.knative.dev/v1\n"
-                "kind: Service\n"
-                "metadata:\n"
-                f"  name: {plan.target_platform.lower()}-service\n"
-                "spec:\n"
-                "  template:\n"
-                "    spec:\n"
-                "      containers:\n"
-                "        - image: gcr.io/PROJECT/app\n"
-                "          ports:\n"
-                "            - containerPort: 8080\n"
-                f"{note}\n"
-            ),
-        }
-        diff = CodeDiff(
-            branch_name="feature/cloud-run-migration",
-            files_changed=list(file_contents.keys()),
-            diff_text="+ added /healthz endpoint for Cloud Run readiness probe",
-            unit_tests_added=["test_healthz_endpoint"],
-            file_contents=file_contents,
-        )
+                                        tool="generate_migration_code_files")
+        repo_path = getattr(self.session, "repo_path", None) or "fixtures/sample_legacy_app"
+        try:
+            from src.agents.code_gen_agent import CodeGeneratorAgent
+            self.tracker.add_log(3, f"Generating proposed files for {plan.target_platform} migration…")
+            agent = CodeGeneratorAgent()
+            diff = await asyncio.to_thread(agent.generate_review_diff, plan, repo_path, feedback)
+            self.tracker.add_log(3, f"Drafted {len(diff.files_changed)} file(s): {', '.join(diff.files_changed)}")
+        except Exception as exc:
+            logger.warning("CodeGeneratorAgent fallback in _step_codegen: %s", exc)
+            # Fallback mock — keeps the review UI usable if Gemini/ADC is unavailable.
+            note = f"\n# Revision requested: {feedback}" if feedback else ""
+            file_contents = {
+                "Dockerfile": (
+                    "FROM python:3.11-slim\n"
+                    "WORKDIR /app\n"
+                    "COPY requirements.txt .\n"
+                    "RUN pip install --no-cache-dir -r requirements.txt\n"
+                    "COPY . .\n"
+                    f"CMD [\"gunicorn\", \"-b\", \"0.0.0.0:8080\", \"app:app\"]{note}\n"
+                ),
+                "app/healthz.py": (
+                    "from flask import Blueprint, jsonify\n\n"
+                    "healthz_bp = Blueprint('healthz', __name__)\n\n"
+                    "@healthz_bp.route('/healthz')\n"
+                    "def healthz():\n"
+                    "    return jsonify({'ok': True})\n"
+                    f"{note}\n"
+                ),
+                "service.yaml": (
+                    "apiVersion: serving.knative.dev/v1\n"
+                    "kind: Service\n"
+                    "metadata:\n"
+                    f"  name: {plan.target_platform.lower()}-service\n"
+                    "spec:\n"
+                    "  template:\n"
+                    "    spec:\n"
+                    "      containers:\n"
+                    "        - image: gcr.io/PROJECT/app\n"
+                    "          ports:\n"
+                    "            - containerPort: 8080\n"
+                    f"{note}\n"
+                ),
+            }
+            diff = CodeDiff(
+                branch_name="feature/cloud-run-migration",
+                files_changed=list(file_contents.keys()),
+                diff_text="+ added /healthz endpoint for Cloud Run readiness probe",
+                unit_tests_added=["test_healthz_endpoint"],
+                file_contents=file_contents,
+            )
         # Store for the /api/pipeline/{id}/analysis endpoint (drives the editable file review panel)
         self.session.codegen_data = diff.model_dump()
         self.tracker.update_step_status(3, StepStatus.COMPLETED, log_msg=f"Committed to {diff.branch_name}.")

@@ -21,9 +21,10 @@ from pathlib import Path
 from typing import Callable
 
 import yaml
+from google.adk.agents import Agent
 
 from src.mcp_servers.server_git import GitOperations
-from src.models.schemas import CodeDiff, MigrationPlan
+from src.models.schemas import CodeDiff, CostEstimate, MigrationPlan
 from src.utils.genai_client import build_genai_client
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,25 @@ class CodeGeneratorAgent:
                 self._model,
                 self._auth_mode,
             )
+
+        self._init_adk_agent()
+
+    def _init_adk_agent(self) -> None:
+        """Initializes the Google ADK Agent representation."""
+        self.adk_agent = Agent(
+            name="code_gen_agent",
+            description="Generates or refactors application code files from an approved migration plan or concept.",
+            model=self._model,
+            instruction=(
+                "You are the SentinelForge Code Generation Agent. "
+                "Given an approved migration plan or feature request, generate complete, production-ready "
+                "file contents (Dockerfile, application code, infra manifests) for human review.\n\n"
+                "When asked to generate or refactor code for a migration, "
+                "call `generate_migration_code_files(repo_path=..., target_platform=..., rationale=...)` directly "
+                "and present the proposed files for review."
+            ),
+            tools=[generate_migration_code_files],
+        )
 
     # =========================================================================
     # Properties
@@ -242,6 +262,77 @@ class CodeGeneratorAgent:
 
         self._last_code_diff = code_diff
         return code_diff
+
+    def generate_review_diff(
+            self,
+            plan: MigrationPlan,
+            repo_path: str,
+            feedback: str | None = None,
+    ) -> CodeDiff:
+        """Generates in-memory file changes for the HITL review UI (no git required).
+
+        Unlike `generate_code_changes`, this does not require the target
+        directory to be a git repository or write files to disk — it returns
+        proposed `file_contents` for the reviewer to inspect/edit in the
+        browser before anything is committed. Used by the web pipeline's
+        Code Review gate (Step 3) instead of the mocked file generation.
+
+        Args:
+            plan: Approved migration plan with target platform details.
+            repo_path: Path to the application repository (read-only).
+            feedback: Optional reviewer feedback from a previous rejection,
+                appended to the generation prompt for regeneration.
+
+        Returns:
+            CodeDiff with `file_contents` populated (no branch/commit yet).
+        """
+        if not self.enabled:
+            raise RuntimeError(
+                "Code generation requires ADC-authenticated Gemini client"
+            )
+
+        repo_dir = Path(repo_path)
+        plan_dict = {
+            "target_platform": plan.target_platform,
+            "baseline_platform": plan.baseline.platform,
+            "monthly_savings_usd": plan.monthly_savings_usd,
+            "rationale": plan.rationale,
+        }
+        plan_text = yaml.dump(plan_dict, default_flow_style=False)
+        if feedback:
+            plan_text += f"\nREVISION REQUESTED BY REVIEWER: {feedback}\n"
+
+        files_to_generate = self._determine_migration_files(plan_text, repo_dir)
+        file_contents: dict[str, str] = {}
+
+        for file_info in files_to_generate:
+            file_name = file_info["name"]
+            file_purpose = file_info.get("purpose", "")
+            action = file_info.get("action", "create")
+            existing_path = repo_dir / file_name
+
+            if action == "modify" and existing_path.exists():
+                current_content = existing_path.read_text(encoding="utf-8")
+                new_content = self._modify_file_for_migration(
+                    plan_text, file_name, file_purpose, current_content
+                )
+            else:
+                new_content = self._generate_single_file(plan_text, file_name, file_purpose)
+
+            file_contents[file_name] = new_content
+
+        branch_name = self._derive_branch_name(plan)
+        diff = CodeDiff(
+            branch_name=branch_name,
+            files_changed=list(file_contents.keys()),
+            diff_text=f"Proposed {len(file_contents)} file(s) for {plan.target_platform} migration.",
+            unit_tests_added=[],
+            file_contents=file_contents,
+        )
+        self._last_branch = branch_name
+        self._last_files_changed = diff.files_changed
+        self._last_code_diff = diff
+        return diff
 
     # =========================================================================
     # Integration Interface - For Other Agents
@@ -1108,3 +1199,36 @@ Please fix this issue and try again.
             NotImplementedError: Advanced refactoring not yet implemented
         """
         raise NotImplementedError("Advanced refactoring not yet implemented")
+
+
+# ADK tool function exposed to the agent / adk web
+def generate_migration_code_files(
+    repo_path: str,
+    target_platform: str,
+    baseline_platform: str = "GCE",
+    monthly_savings_usd: float = 0.0,
+    rationale: str = "",
+) -> dict:
+    """Generates proposed file changes (Dockerfile, app code, infra manifests) for a migration plan.
+
+    Args:
+        repo_path: Path to the application repository to migrate (read-only; no files are written).
+        target_platform: Target GCP platform, e.g. 'CloudRun'.
+        baseline_platform: Current hosting platform, e.g. 'GCE'.
+        monthly_savings_usd: Estimated monthly savings from the migration plan.
+        rationale: Human-readable rationale for the migration approach.
+
+    Returns:
+        Dictionary with branch_name, files_changed, diff_text, and file_contents (path -> proposed content).
+    """
+    plan = MigrationPlan(
+        baseline=CostEstimate(platform=baseline_platform, monthly_cost_usd=0.0),
+        target=CostEstimate(platform=target_platform, monthly_cost_usd=0.0),
+        target_platform=target_platform,
+        monthly_savings_usd=monthly_savings_usd,
+        savings_pct=0.0,
+        rationale=rationale or f"Migrate from {baseline_platform} to {target_platform}.",
+    )
+    agent = CodeGeneratorAgent()
+    diff = agent.generate_review_diff(plan, repo_path)
+    return diff.model_dump()
