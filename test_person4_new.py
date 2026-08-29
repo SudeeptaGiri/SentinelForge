@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from src.agents.code_gen_agent import CodeGeneratorAgent
 from src.agents.review_agent import ReviewAgent
+from src.agents.code_optimizer import CodeOptimizerAgent
 from src.agents.qa_agent import QAAgent
 
 logging.basicConfig(
@@ -79,21 +80,47 @@ def main():
             logger.warning("⚠️  Review agent disabled, skipping reviews")
             review_report = None
         else:
-            review_report = reviewer.review_code(output_path, mode="both")
+            # Pass project root, reviewer will look for generated_output/src
+            review_report = reviewer.review_code(base_path=Path.cwd(), mode="both")
             
             logger.info(f"Normal review: {len(review_report.normal_issues)} issues")
             logger.info(f"Epic review: {len(review_report.epic_issues)} issues")
             logger.info(f"Critical issues: {review_report.critical_count()}")
             
-            # Apply fixes if critical issues found
-            if review_report.critical_count() > 0:
-                print_section("🔧 Step 3: Apply Review Fixes")
-                fixes = reviewer.generate_fix_suggestions(review_report, output_path)
+            # Apply fixes using Code Optimizer Agent
+            if len(review_report.all_issues) > 0:
+                print_section("🔧 Step 3: Auto-Fix Issues with Optimizer")
                 
-                for file_path, fixed_code in fixes.items():
-                    fix_file = output_path / file_path
-                    fix_file.write_text(fixed_code)
-                    logger.info(f"✅ Applied fix to {file_path}")
+                try:
+                    optimizer = CodeOptimizerAgent()
+                    
+                    if not optimizer.enabled:
+                        logger.warning("⚠️  Optimizer disabled, skipping auto-fix")
+                    else:
+                        logger.info(f"🔧 Attempting to fix {len(review_report.all_issues)} issues...")
+                        
+                        opt_report = optimizer.fix_issues(
+                            review_report=review_report.to_dict(),
+                            base_path=Path.cwd()
+                        )
+                        
+                        logger.info(f"✅ Fixed: {len(opt_report.files_fixed)} files")
+                        logger.info(f"❌ Failed: {len(opt_report.files_failed)} files")
+                        logger.info(f"🆘 Needs Human: {len(opt_report.needs_human_intervention)} files")
+                        
+                        if opt_report.files_fixed:
+                            for file in opt_report.files_fixed:
+                                logger.info(f"   ✓ {file}")
+                        
+                        if opt_report.needs_human_intervention:
+                            logger.warning("🆘 Manual intervention required for:")
+                            for file in opt_report.needs_human_intervention:
+                                logger.warning(f"   ! {file}")
+                
+                except Exception as e:
+                    logger.error(f"❌ Auto-fix failed: {e}")
+                    import traceback
+                    traceback.print_exc()
     
     except Exception as e:
         logger.error(f"❌ Review failed: {e}")
