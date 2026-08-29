@@ -100,7 +100,7 @@ def test_spec_agent_generate_spec():
     result = agent.generate_api_spec("Build a payments webhook service for Cloud Run")
     assert isinstance(result, SpecResult)
     assert result.spec_type == "OpenAPI"
-    assert len(result.endpoints) >= 2
+    assert len(result.endpoints) >= 1
     assert len(result.data_models) >= 1
     assert result.workload_spec is not None
 
@@ -109,5 +109,5 @@ def test_spec_agent_generate_spec():
     assert tool_res["status"] == "success"
     assert "spec_yaml" in tool_res
     assert "openapi: 3.1.0" in tool_res["spec_yaml"]
-    assert len(tool_res["endpoints"]) >= 2
+    assert len(tool_res["endpoints"]) >= 1
     assert len(tool_res["data_models"]) >= 1

@@ -30,6 +30,11 @@ from src.web.routes import router as web_router
 
 app = FastAPI(title="SentinelForge DevSecOps Agent")
 app.include_router(web_router)
+
+dist_assets_dir = Path(__file__).resolve().parent / "web" / "dist" / "assets"
+if dist_assets_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(dist_assets_dir)), name="assets")
+
 app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).resolve().parent / "web" / "static")),
