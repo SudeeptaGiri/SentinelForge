@@ -1,14 +1,73 @@
-# Description: Pentest URL allowlists, DAST intensity thresholds, and forbidden actions.
-# Need: Automated security scanning (Strix) must never target unauthorized hosts
-#       or run destructive/aggressive scans without explicit boundaries.
-# Motive: Enforce a hard safety boundary at the config layer so the pentest_agent
-#         cannot be prompted into scanning out-of-scope or production systems.
+# Description: Enterprise security policy for all automated scanning and agent actions.
+# Need: Automated security scanning must never target unauthorized hosts or run
+#       destructive scans, and every agent action must respect least-privilege,
+#       rate limits, and OWASP-aligned controls.
+# Motive: Enforce hard safety boundaries at the config layer so no agent — even
+#         one driven by a hallucinating LLM — can violate enterprise policy.
+# Standard: Aligned with OWASP Testing Guide v4, NIST SP 800-53 (SA-11, SI-10),
+#           and CIS Google Cloud Foundations Benchmark v2.0.
 
 security:
+
+  # --- Scan Target Controls (OWASP OTG-CONFIG) ---
   allowlisted_hosts:
     - "*.staging.internal"
-  dast_intensity: medium # low | medium | high
+    - "*.sandbox.internal"
+    - "localhost"
+    - "127.0.0.1"
+  blocked_hosts:
+    - "*.prod.internal"
+    - "*.production.*"
+    - "*.corp.google.com"
+
+  # --- DAST Scanner Controls ---
+  dast_intensity: medium          # low | medium | high — ceiling for all scans
+  scan_timeout_seconds: 300       # kill scan after 5 min to prevent runaway costs
+  max_concurrent_scans: 1         # one scan at a time per pipeline run
+  scan_rate_limit_rps: 50         # max requests/sec to staging target
+
+  # --- Forbidden Actions (hard block, not suggestions) ---
   forbidden_actions:
     - "scan_production_hosts"
     - "credential_bruteforce"
     - "destructive_payloads"
+    - "sql_injection_exploit"
+    - "directory_traversal_write"
+    - "privilege_escalation"
+    - "exfiltrate_data"
+    - "modify_target_data"
+
+  # --- Release Gate Policy ---
+  release_policy:
+    block_on_critical: true       # any CRITICAL (CVSS >= 9.0) blocks release
+    block_on_high: false          # HIGH findings are flagged but not blocking
+    max_acceptable_risk: "MEDIUM" # overall risk must be <= this to auto-pass
+
+  # --- Secret Detection (OWASP OTG-CONFIG-004) ---
+  secret_patterns:
+    - "AKIA[0-9A-Z]{16}"         # AWS access key
+    - "AIza[0-9A-Za-z_-]{35}"    # GCP API key
+    - "ghp_[0-9A-Za-z]{36}"      # GitHub PAT
+    - "-----BEGIN (RSA |EC )?PRIVATE KEY-----"
+    - "password\\s*=\\s*['\"].+['\"]"
+
+  # --- IaC Security Scanning (NIST SA-11, CIS GCP 1.x) ---
+  iac_policy:
+    require_terraform_validate: true
+    require_checkov_scan: true
+    blocked_iac_patterns:
+      - "allUsers"                # public IAM binding
+      - "allAuthenticatedUsers"   # overly broad IAM binding
+      - "0.0.0.0/0"              # unrestricted CIDR in firewall rules
+    max_iam_bindings_per_resource: 5
+
+  # --- Agent Execution Guardrails ---
+  agent_guardrails:
+    max_self_heal_retries: 3      # QA agent retry cap (prevents infinite loops)
+    max_code_gen_files: 20        # single code-gen step can't touch > 20 files
+    sandbox_ttl_minutes: 60       # ephemeral staging auto-teardown
+    require_human_approval_for:
+      - "terraform_apply"
+      - "cloud_build_deploy"
+      - "git_push_to_main"
+      - "iam_policy_change"

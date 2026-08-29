@@ -1,25 +1,56 @@
-"""Shared Pydantic Data Contracts for SentinelForge.
+"""Shared Pydantic Data Contracts + orchestrator-internal types for SentinelForge.
 
 Description: Central data models defining all payloads flowing across agents,
-             HITL confirmation gates, and MCP servers.
+             HITL confirmation gates, and MCP servers. Single source of truth
+             for objects that flow between every agent, the supervisor, and the
+             HITL gates. Everyone imports from here.
 Need: A single source of truth for pipeline inputs/outputs avoids contract
       drift between specialist agents.
 Motive: Provide strongly typed, validated representations for Analysis, Specs,
         Costs, Infra, Code Diffs, and Security Audits.
+
+Step-seam contracts: at the run_fn boundary the pipeline expects the types
+defined in THIS file. Use CostEstimate (not cost_models.CostComparison) and
+AuditReport (not security_models.SecurityAuditReport) as the returned artifact.
+Scaffold domain models may be used internally by agents for richer data but
+must be converted before being returned to the pipeline.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+
 from pydantic import BaseModel, Field
 
 
 class StepStatus(str, Enum):
     """Execution status for pipeline steps and gates."""
     PENDING = "PENDING"
-    WAITING_APPROVAL = "WAITING_APPROVAL"
+    WAITING_PRE_STEP_CONFIRMATION = "WAITING_PRE_STEP_CONFIRMATION"
     IN_PROGRESS = "IN_PROGRESS"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    REJECTED = "REJECTED"
+
+
+class RunStatus(str, Enum):
+    """Pipeline-level run status (used by the sync supervisor and state manager)."""
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+    COMPLETED = "COMPLETED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+
+
+class RiskLevel(str, Enum):
+    """Risk classification for a pipeline step's pre-step confirmation."""
+    LOW_READ_ONLY_ESTIMATION = "LOW_READ_ONLY_ESTIMATION"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
 
 
 class WorkloadSpec(BaseModel):
@@ -38,7 +69,8 @@ class AnalysisResult(BaseModel):
         default="Unknown",
         description="Detected current hosting platform (e.g., GCE, GKE, CloudRun, BareMetal)"
     )
-    workload_spec: WorkloadSpec = Field(
+    workload_spec: Optional[WorkloadSpec] = Field(
+        default=None,
         description="Extracted/estimated resource requirements and workload profile"
     )
     summary: str = Field(
@@ -177,3 +209,65 @@ class GateDecision(BaseModel):
         default=None,
         description="Optional reviewer feedback, adjustments, or rejection reason"
     )
+
+
+class GateRequest(BaseModel):
+    """Request payload emitted when a HITL gate needs human review."""
+    step_id: int = Field(description="ID of the confirmation gate")
+    gate_name: str = Field(description="Human-readable gate name")
+    summary: str = Field(description="Summary of the step output awaiting approval")
+    tools_used: List[str] = Field(
+        default_factory=list,
+        description="Tools invoked during the step"
+    )
+    artifact: dict = Field(
+        default_factory=dict,
+        description="Serialized artifact payload for review"
+    )
+
+
+class PreStepConfirmation(BaseModel):
+    """Payload shown in the Pre-Step Confirmation Modal (see ui_progress_tracker_and_gates.md)."""
+    event_type: str = "PRE_STEP_CONFIRMATION_REQUIRED"
+    pipeline_id: str
+    step_number: int
+    total_steps: int
+    step_name: str
+    sub_agent: str
+    preview_summary: str
+    tools_to_invoke: List[str]
+    estimated_duration_seconds: int
+    risk_level: RiskLevel
+
+
+class PipelineStepView(BaseModel):
+    """Serializable view of one stepper row, sent to the UI over SSE."""
+    step_id: int
+    name: str
+    sub_agent: str
+    status: StepStatus
+    active_tool: str = ""
+    latest_log: str = ""
+    elapsed_seconds: float = 0.0
+
+
+@dataclass
+class PipelineStep:
+    """Orchestrator-internal definition of a single pipeline step."""
+    id: int
+    name: str
+    gate_name: str | None
+    run_fn: Callable[["PipelineContext", str | None], Any]
+
+
+@dataclass
+class PipelineContext:
+    """Orchestrator-internal mutable context threaded across pipeline steps."""
+    workload: WorkloadSpec | None = None
+    artifacts: dict[str, Any] = field(default_factory=dict)
+
+    def store(self, step: "PipelineStep", artifact: Any) -> None:
+        self.artifacts[step.name] = artifact
+
+    def get(self, name: str) -> Any:
+        return self.artifacts.get(name)
