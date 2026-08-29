@@ -47,6 +47,11 @@ class GateDecisionRequest(BaseModel):
     edited_files: dict[str, str] | None = None
 
 
+class CostEstimateRequest(BaseModel):
+    architecture_text: str
+    region: str = "us-central1"
+
+
 @router.get("/")
 async def index(request: Request):
     if _DIST_INDEX.exists():
@@ -157,3 +162,25 @@ async def gate_audit_log(pipeline_id: str) -> list[dict]:
     if not session:
         raise HTTPException(status_code=404, detail="Unknown pipeline_id")
     return session.gate.get_audit_log()
+
+
+@router.post("/api/cost/estimate")
+async def cost_estimate(request: CostEstimateRequest) -> dict:
+    """Estimate monthly GCP running cost from a plain-text architecture description."""
+    from src.mcp_servers.server_cost import estimate_architecture_cost
+    try:
+        return estimate_architecture_cost(request.architecture_text, request.region)
+    except Exception as exc:  # noqa: BLE001 - never let pricing errors crash the UI
+        raise HTTPException(status_code=422, detail=f"Cost estimation failed: {exc}")
+
+
+@router.get("/api/pipeline/{pipeline_id}/gate/{step_id}/detail")
+async def gate_detail(pipeline_id: str, step_id: int) -> dict:
+    """Returns the artifact and summary for a pending or recently resolved gate."""
+    session = state_manager.get_session(pipeline_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Unknown pipeline_id")
+    detail = session.gate.get_gate_detail(step_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="No gate detail found for this step")
+    return detail

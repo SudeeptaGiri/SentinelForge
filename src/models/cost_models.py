@@ -23,3 +23,34 @@ class CostComparison(BaseModel):
     baseline_monthly_cost: float
     target_monthly_cost: float
     estimated_savings_pct: float
+
+
+class ServiceCostItem(BaseModel):
+    """One line-item in an architecture cost breakdown."""
+
+    service_name: str
+    sku_description: str
+    quantity: float
+    unit: str
+    unit_price_usd: float
+    monthly_cost_usd: float
+
+
+class ArchitectureInput(BaseModel):
+    """Request body for the /api/cost/estimate endpoint."""
+
+    architecture_text: str
+    region: str = "us-central1"
+
+
+class ArchitectureCostEstimate(BaseModel):
+    """Full cost breakdown returned by CostScalingAgent.estimate_from_architecture()."""
+
+    services: list[ServiceCostItem]
+    total_monthly_cost_usd: float
+    region: str
+    parsed_services_count: int
+    disclaimer: str = (
+        "Estimates are based on public GCP list pricing; actual costs may vary "
+        "depending on discounts, sustained-use savings, and committed-use contracts."
+    )
