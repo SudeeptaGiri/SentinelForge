@@ -1,0 +1,20 @@
+# Person 4: Code Generation & QA Self-Healing Agent Dependencies
+
+# Core dependencies (should already be installed via pyproject.toml)
+fastapi>=0.104.0
+uvicorn>=0.24.0
+pydantic>=2.0.0
+google-genai>=0.3.0
+jinja2>=3.1.0
+pyyaml>=6.0.0
+
+# Additional dependencies for agents
+# None needed - uses subprocess for git and pytest
+
+# Development dependencies
+pytest>=7.4.0
+pytest-flask>=1.3.0
+
+# Demo app dependencies
+flask>=3.0.0
+

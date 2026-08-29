@@ -6,6 +6,10 @@ __pycache__/
 venv/
 dist/
 build/
+.pytest_cache/
+
+# Repos Cache
+.repos_cache/
 
 # Environment / secrets
 .env
@@ -20,3 +24,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+#Generated Output
+generated_output/*
+
