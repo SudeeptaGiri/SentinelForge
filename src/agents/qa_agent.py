@@ -130,7 +130,7 @@ class QAAgent:
         tests_dir.mkdir(exist_ok=True)
         
         # Create __init__.py
-        (tests_dir / "__init__.py").write_text("")
+        (tests_dir / "__init__.py").write_text("", encoding='utf-8')
         
         # Read actual generated app to understand its structure
         app_file = code_path / "app.py"
@@ -191,7 +191,7 @@ Return ONLY the complete test_app.py code following this pattern. No explanation
                 test_code = test_code.split("```")[1].split("```")[0].strip()
             
             test_file = tests_dir / "test_app.py"
-            test_file.write_text(test_code)
+            test_file.write_text(test_code, encoding='utf-8')
             logger.info(f"✅ Generated test cases in {test_file}")
         except Exception as e:
             logger.error(f"Failed to generate tests: {e}")
@@ -533,10 +533,10 @@ def healthz():
             # Backup current version (simple file backup, not git)
             backup_file = code_path / "app.py.backup"
             if app_file.exists():
-                backup_file.write_text(app_file.read_text())
+                backup_file.write_text(app_file.read_text(encoding='utf-8'), encoding='utf-8')
             
             # Write the fix
-            app_file.write_text(fix_code)
+            app_file.write_text(fix_code, encoding='utf-8')
             
             # Save healing record to file
             healing_file = code_path / "HEALING_LOG.txt"
@@ -554,9 +554,9 @@ Status: Success
             # Append to healing log
             if healing_file.exists():
                 current = healing_file.read_text()
-                healing_file.write_text(current + healing_entry)
+                healing_file.write_text(current + healing_entry, encoding='utf-8')
             else:
-                healing_file.write_text("SELF-HEALING LOG\n" + "=" * 70 + "\n" + healing_entry)
+                healing_file.write_text("SELF-HEALING LOG\n" + "=" * 70 + "\n" + healing_entry, encoding='utf-8')
             
             logger.info(f"✅ Fix applied and logged to {healing_file}")
             

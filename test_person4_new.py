@@ -37,7 +37,7 @@ def main():
     print_section("🚀 PERSON 4: PLAN-DRIVEN CODE GENERATION & REVIEW")
     
     # Step 1: Locate plan file
-    plan_file = Path(__file__).parent / "test_plans" / "TestPlan.yaml"
+    plan_file = Path(__file__).parent / "test_plans" / "TestPlan"
     
     if not plan_file.exists():
         logger.error(f"Plan file not found: {plan_file}")

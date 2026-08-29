@@ -1,34 +1,19 @@
-PLAN: Hello World EPAM Hackathon Test Plan
+PLAN: Hello World App
 ===========================================
 
-NAME: Hello World EPAM Hackathon
-TYPE: TestPlan
+NAME: Ayushi Desc
+TYPE: Plan
 LANGUAGE: Python
 FRAMEWORK: Flask + pytest
 
 DESCRIPTION:
-Simple test application to demonstrate automated code generation.
-The application should print "Hello World from EPAM Hackathon" and
-provide a health check endpoint.
-
-REQUIREMENTS:
-1. Create a Flask application
-2. Add a function that prints: "Hello World from EPAM Hackathon"
-3. Add /healthz endpoint returning {"status": "healthy"} with 200 status
-4. Follow Python best practices
-5. Include proper error handling
-
-TEST CASES:
------------
-1. test_hello_world_output
-   - Verify the hello world message is printed correctly
-   - Expected: "Hello World from EPAM Hackathon"
-
-2. test_healthz_endpoint
-   - Verify health check endpoint exists
-   - Endpoint: /healthz
-   - Expected Status: 200
-   - Expected Response: {"status": "healthy"}
+Simple application to demonstrate Ayushi's Profile.
+It will have few lines about ayushi which can be create from following input.
+1. she is a girl.
+2. she is swe
+3. she likes coffee
+4. she is workign on code-genie agent.
+with these data the application must have suitable data to display on the home page.
 
 DEPENDENCIES:
 -------------

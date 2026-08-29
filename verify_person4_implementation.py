@@ -12,7 +12,7 @@ print("="*70)
 checks = []
 
 files_to_check = [
-    ("Test Plan", "test_plans/TestPlan.yaml"),
+    ("Test Plan", "test_plans/TestPlan"),
     ("Review Agent", "src/agents/review_agent.py"),
     ("Updated Code Gen", "src/agents/code_gen_agent.py"),
     ("Updated QA Agent", "src/agents/qa_agent.py"),
