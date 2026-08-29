@@ -10,11 +10,11 @@ Motive: Catch ambiguity and spec misalignment early, before expensive code
 """
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Tuple
 import yaml
 from google.adk.agents import Agent
 
-from src.models.schemas import SpecResult, WorkloadSpec
+from src.models.schemas import SpecResult
 from src.utils.gcp_client import get_genai_client
 from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response
 from src.utils.speckit import (

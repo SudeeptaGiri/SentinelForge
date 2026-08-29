@@ -12,7 +12,7 @@ import logging
 import os
 import time
 
-from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response
+from src.utils.terminal_logger import log_llm_request, log_llm_response
 
 logger = logging.getLogger(__name__)
 

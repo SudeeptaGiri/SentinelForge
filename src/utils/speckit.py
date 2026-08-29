@@ -10,7 +10,7 @@ Motive: Ensure all API specs conform to standard OpenAPI specifications, catchin
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 import yaml
 
 from src.models.schemas import WorkloadSpec
