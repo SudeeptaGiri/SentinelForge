@@ -9,10 +9,9 @@ Motive: Ground code-gen decisions in the real structure of the repository
 """
 
 import json
-import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from google.adk.agents import Agent
 from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response

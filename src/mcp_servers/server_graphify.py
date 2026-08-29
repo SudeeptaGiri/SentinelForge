@@ -8,7 +8,6 @@ Motive: Decouple graph extraction logic behind standard MCP tools so it can be u
         or replaced independently.
 """
 
-import os
 from typing import Any, Dict, Optional
 from src.utils.graphify_rag import GraphifyKnowledgeGraph
 

@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import urllib.parse
-from typing import List, Optional, Set, Tuple
+from typing import Optional, Set, Tuple
 import git
 
 DEFAULT_ALLOWED_HOSTS: Set[str] = {

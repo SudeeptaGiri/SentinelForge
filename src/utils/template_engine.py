@@ -9,11 +9,16 @@ Motive: Keep template rendering (variable substitution, escaping) in one
         tested utility used by all IaC/CI-CD generation.
 """
 
+from pathlib import Path
+
 from jinja2 import Environment, FileSystemLoader
+
+# Resolve templates/ relative to this file so it works from any working directory.
+_TEMPLATES_DIR = str(Path(__file__).resolve().parents[2] / "templates")
 
 
 def render_template(template_path: str, context: dict) -> str:
     """Renders a Jinja2 template file with the given context dict."""
-    env = Environment(loader=FileSystemLoader("templates"))
+    env = Environment(loader=FileSystemLoader(_TEMPLATES_DIR))
     template = env.get_template(template_path)
     return template.render(**context)
