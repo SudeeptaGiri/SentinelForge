@@ -1,8 +1,42 @@
-import React from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ArchPlanPanel from './ArchPlanPanel';
 import StepRow from './StepRow';
 
-export default function PipelinePhase({ steps, specData, onApprove, onReject, result, error }) {
+export default function PipelinePhase({ steps, specData, planData, codegenData, fileEdits, onFileEdit, onApprove, onReject, onAbort, result, error }) {
+  const [leftWidth, setLeftWidth] = useState(45);
+  const [isDragging, setIsDragging] = useState(false);
+  const containerRef = useRef(null);
+
+  const handleMouseDown = useCallback((e) => {
+    setIsDragging(true);
+    e.preventDefault();
+  }, []);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e) => {
+      if (!containerRef.current) return;
+      const container = containerRef.current;
+      const rect = container.getBoundingClientRect();
+      const newWidth = ((e.clientX - rect.left) / rect.width) * 100;
+      if (newWidth >= 30 && newWidth <= 70) {
+        setLeftWidth(newWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isDragging]);
+
   const done = steps.filter((s) => s.status === 'COMPLETED').length;
   const pct = steps.length ? Math.round((done / steps.length) * 100) : 0;
 
@@ -11,42 +45,52 @@ export default function PipelinePhase({ steps, specData, onApprove, onReject, re
       <h2 className="phase-title">
         <span className="phase-num">3</span> Live Pipeline Execution &amp; HITL Gates
       </h2>
-      <div className="pipeline-grid">
-        <ArchPlanPanel steps={steps} specData={specData} />
-        <div className="stepper-panel panel-box">
-          <div className="stepper-header">
-            <h3>Pipeline Stepper</h3>
-            <div className="progress-track">
-              <div className="progress-fill" style={{ width: `${pct}%` }} />
+      <div className="pipeline-container" ref={containerRef}>
+        <div className="pipeline-left" style={{ flex: `0 0 ${leftWidth}%` }}>
+          <ArchPlanPanel
+            steps={steps}
+            specData={specData}
+            planData={planData}
+            codegenData={codegenData}
+            fileEdits={fileEdits}
+            onFileEdit={onFileEdit}
+          />
+        </div>
+        <div className="pipeline-splitter" onMouseDown={handleMouseDown}>
+          <div className="splitter-handle"></div>
+        </div>
+        <div className="pipeline-right" style={{ flex: 1 }}>
+          <div className="stepper-panel">
+            <div className="stepper-header">
+              <h3>Pipeline Progress</h3>
+              <div className="progress-info">
+                <span className="progress-text">{done} of {steps.length} completed</span>
+                <span className="progress-percent">{pct}%</span>
+              </div>
+              <div className="progress-track">
+                <div className="progress-fill" style={{ width: `${pct}%` }} />
+              </div>
             </div>
-            <span className="muted" style={{ fontSize: '12px' }}>{pct}% complete ({done}/{steps.length})</span>
+
+            <ol className="stepper">
+              {steps.map((s) => (
+                <StepRow
+                  key={s.step_id}
+                  step={s}
+                  onApprove={onApprove}
+                  onReject={onReject}
+                  onAbort={onAbort}
+                />
+              ))}
+            </ol>
+
+            {(result || error) && (
+              <div className={`result-box ${error ? 'error' : 'success'}`}>
+                <h4>{error ? '❌ Pipeline Failed' : '✅ Pipeline Completed'}</h4>
+                <pre>{error ? String(error) : JSON.stringify(result, null, 2)}</pre>
+              </div>
+            )}
           </div>
-
-          <ol className="stepper">
-            {steps.map((s) => (
-              <StepRow key={s.step_id} step={s} onApprove={onApprove} onReject={onReject} />
-            ))}
-          </ol>
-
-          {(result || error) && (
-            <div
-              className="result-box"
-              style={{
-                marginTop: '16px',
-                padding: '16px',
-                borderRadius: '8px',
-                background: error ? 'rgba(240, 84, 107, 0.1)' : 'rgba(51, 196, 129, 0.1)',
-                border: `1px solid ${error ? 'var(--danger)' : 'var(--success)'}`,
-              }}
-            >
-              <h4 style={{ margin: '0 0 8px', color: error ? 'var(--danger)' : 'var(--success)' }}>
-                {error ? '❌ Pipeline Failed / Terminated' : '🎉 Pipeline Completed Successfully!'}
-              </h4>
-              <pre style={{ margin: 0, fontSize: '12px', whiteSpace: 'pre-wrap', color: 'var(--text)' }}>
-                {error ? String(error) : JSON.stringify(result, null, 2)}
-              </pre>
-            </div>
-          )}
         </div>
       </div>
     </section>

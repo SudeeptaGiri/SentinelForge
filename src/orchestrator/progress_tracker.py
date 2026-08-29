@@ -44,6 +44,7 @@ class PipelineStepState:
             status=self.status,
             active_tool=self.active_tool,
             latest_log=self.logs[-1] if self.logs else "",
+            logs=self.logs[-8:],  # keep the UI log list minimal
             elapsed_seconds=self.elapsed_seconds(),
         )
 
@@ -90,6 +91,12 @@ class ProgressTrackerEngine:
             step.active_tool = tool
         if log_msg:
             step.logs.append(log_msg)
+        self._broadcast(self._snapshot_event())
+
+    def add_log(self, step_id: int, log_msg: str) -> None:
+        """Appends a log line without changing status/sub_agent/tool — for progress pings."""
+        step = self.steps[step_id - 1]
+        step.logs.append(log_msg)
         self._broadcast(self._snapshot_event())
 
     def snapshot(self) -> dict:

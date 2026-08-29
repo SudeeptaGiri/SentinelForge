@@ -73,11 +73,9 @@ export default function AnalysisPhase({ analysis: a, graph }) {
 
         <div className="analysis-right">
           <div className="panel-box graph-box">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <h3>Code Knowledge Graph</h3>
-              <span className="badge-muted" style={{ fontSize: '11px', background: '#1c2436', padding: '3px 8px', borderRadius: '4px' }}>
-                GraphRAG · AST Index
-              </span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h3 style={{ marginBottom: 0 }}>Code Knowledge Graph</h3>
+              <span className="badge-muted">GraphRAG &middot; AST Index</span>
             </div>
             <VisGraph nodes={graph?.nodes || []} edges={graph?.edges || []} />
             <div className="graph-legend">

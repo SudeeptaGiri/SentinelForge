@@ -27,12 +27,16 @@ export default function App() {
   const [analysis, setAnalysis] = useState(null);
   const [graph, setGraph] = useState({ nodes: [], edges: [] });
   const [specData, setSpecData] = useState(null);
+  const [planData, setPlanData] = useState(null);
+  const [codegenData, setCodegenData] = useState(null);
+  const [fileEdits, setFileEdits] = useState({});
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
   const esRef = useRef(null);
   const aPolled = useRef(false);
-  const sPolled = useRef(false);
+  const lastProposalLog = useRef(null);
+  const lastCodegenLog = useRef(null);
   const metaRef = useRef({});
 
   function upsert(run) {
@@ -48,11 +52,15 @@ export default function App() {
     setAnalysis(null);
     setGraph({ nodes: [], edges: [] });
     setSpecData(null);
+    setPlanData(null);
+    setCodegenData(null);
+    setFileEdits({});
     setResult(null);
     setError(null);
     setSteps([]);
     aPolled.current = false;
-    sPolled.current = false;
+    lastProposalLog.current = null;
+    lastCodegenLog.current = null;
 
     try {
       const res = await fetch('/api/pipeline/start', {
@@ -89,9 +97,30 @@ export default function App() {
           setTimeout(() => pollAnalysis(id), 600);
         }
 
-        if (!sPolled.current && state.steps?.[1]?.status === 'COMPLETED') {
-          sPolled.current = true;
+        // Step 2 (Proposal) can regenerate multiple times on reject+feedback;
+        // re-poll every time its log message changes while awaiting/entering approval.
+        const proposalStep = state.steps?.[1];
+        const proposalLog = proposalStep?.latest_log || null;
+        if (
+          proposalStep &&
+          ['WAITING_APPROVAL', 'COMPLETED'].includes(proposalStep.status) &&
+          proposalLog !== lastProposalLog.current
+        ) {
+          lastProposalLog.current = proposalLog;
           setTimeout(() => pollSpec(id), 600);
+        }
+
+        // Step 3 (Codegen) can also regenerate on reject+feedback; re-poll on each change.
+        const codegenStep = state.steps?.[2];
+        const codegenLog = codegenStep?.latest_log || null;
+        if (
+          codegenStep &&
+          ['WAITING_APPROVAL', 'COMPLETED'].includes(codegenStep.status) &&
+          codegenLog !== lastCodegenLog.current
+        ) {
+          lastCodegenLog.current = codegenLog;
+          setFileEdits({});
+          setTimeout(() => pollCodegen(id), 600);
         }
 
         pollResult(id);
@@ -120,6 +149,15 @@ export default function App() {
       const res = await fetch(`/api/pipeline/${id}/analysis`);
       const d = await res.json();
       if (d.spec) setSpecData(d.spec);
+      if (d.plan) setPlanData(d.plan);
+    } catch {}
+  }
+
+  async function pollCodegen(id) {
+    try {
+      const res = await fetch(`/api/pipeline/${id}/analysis`);
+      const d = await res.json();
+      if (d.codegen) setCodegenData(d.codegen);
     } catch {}
   }
 
@@ -142,10 +180,11 @@ export default function App() {
   }
 
   async function handleApprove(stepId) {
+    const editedFiles = stepId === 3 && Object.keys(fileEdits).length ? fileEdits : null;
     await fetch(`/api/pipeline/${activeId}/gate/${stepId}/decision`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ approved: true, feedback: null }),
+      body: JSON.stringify({ approved: true, feedback: null, edited_files: editedFiles }),
     });
   }
 
@@ -157,10 +196,33 @@ export default function App() {
     });
   }
 
+  function handleFileEdit(path, content) {
+    setFileEdits((prev) => ({ ...prev, [path]: content }));
+  }
+
+  async function handleAbort() {
+    if (!activeId) return;
+    try {
+      await fetch(`/api/pipeline/${activeId}/abort`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      setPhase('done');
+      setError('Pipeline aborted by user');
+      upsert({ ...metaRef.current, status: 'ABORTED' });
+      esRef.current?.close();
+    } catch (e) {
+      console.error('Failed to abort pipeline:', e);
+    }
+  }
+
   function handleSelect(run) {
     setActiveId(run.id);
     setPhase('done');
     setSpecData(null);
+    setPlanData(null);
+    setCodegenData(null);
+    setFileEdits({});
     setResult(run.result || null);
     setError(run.error || null);
     setSteps([]);
@@ -178,12 +240,14 @@ export default function App() {
         const live = d.steps?.some((s) => ['IN_PROGRESS', 'WAITING_APPROVAL'].includes(s.status));
         if (live) {
           aPolled.current = !!d.steps?.find((s) => s.step_id === 1 && s.status === 'COMPLETED');
-          sPolled.current = !!d.steps?.find((s) => s.step_id === 2 && s.status === 'COMPLETED');
+          lastProposalLog.current = d.steps?.[1]?.latest_log || null;
+          lastCodegenLog.current = d.steps?.[2]?.latest_log || null;
           setPhase('running');
           attachSSE(run.id);
         }
         pollAnalysis(run.id);
         pollSpec(run.id);
+        pollCodegen(run.id);
       })
       .catch(() => {});
   }
@@ -196,6 +260,9 @@ export default function App() {
     setAnalysis(null);
     setGraph({ nodes: [], edges: [] });
     setSpecData(null);
+    setPlanData(null);
+    setCodegenData(null);
+    setFileEdits({});
     setResult(null);
     setError(null);
   }
@@ -214,8 +281,13 @@ export default function App() {
         <PipelinePhase
           steps={steps}
           specData={specData}
+          planData={planData}
+          codegenData={codegenData}
+          fileEdits={fileEdits}
+          onFileEdit={handleFileEdit}
           onApprove={handleApprove}
           onReject={handleReject}
+          onAbort={handleAbort}
           result={result}
           error={error}
         />

@@ -191,12 +191,19 @@ class AsyncHITLGateController:
             self.tracker.update_step_status(step_id=step_id, status=status, log_msg=log)
         return decision
 
-    def submit_decision(self, step_id: int, approved: bool, feedback: str | None = None) -> bool:
+    def submit_decision(
+        self,
+        step_id: int,
+        approved: bool,
+        feedback: str | None = None,
+        edited_files: dict[str, str] | None = None,
+    ) -> bool:
         """Called by the web UI to resolve a pending gate."""
         future = self._pending.get(step_id)
         if future is None or future.done():
             return False
-        future.set_result(GateDecision(step_id=step_id, approved=approved, feedback=feedback))
+        future.set_result(GateDecision(step_id=step_id, approved=approved, feedback=feedback,
+                                       edited_files=edited_files))
         return True
 
     def get_audit_log(self) -> list[dict]:

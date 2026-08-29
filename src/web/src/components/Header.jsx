@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { IconBolt, IconClock } from './Icons';
 
 export default function Header({ history, activeId, onSelect, onNewRun }) {
   const [open, setOpen] = useState(false);
@@ -17,28 +18,27 @@ export default function Header({ history, activeId, onSelect, onNewRun }) {
       case 'IN_PROGRESS':
         return 'var(--warning)';
       default:
-        return 'var(--muted)';
+        return 'var(--text-tertiary)';
     }
   };
 
   return (
     <header className="app-header">
       <div className="brand">
-        <span className="brand-mark">⚡</span>
+        <span className="brand-mark"><IconBolt size={16} /></span>
         <div>
           <h1>SentinelForge</h1>
-          <p>Autonomous AI DevSecOps Agent · Google Cloud Vertex AI</p>
+          <p>Autonomous AI DevSecOps Agent &middot; Google Cloud Vertex AI</p>
         </div>
       </div>
       <div className="header-actions">
-        {activeId && <div className="run-badge">RUN · {activeId.slice(-8)}</div>}
+        {activeId && <div className="run-badge">RUN &middot; {activeId.slice(-8)}</div>}
         <div style={{ position: 'relative' }}>
           <button
-            className="btn btn-sm"
-            style={{ background: '#1c2436', color: 'var(--text)' }}
+            className="btn btn-secondary btn-sm"
             onClick={() => setOpen((v) => !v)}
           >
-            ⏱️ History ({history.length})
+            <IconClock size={14} /> History ({history.length})
           </button>
           {open && (
             <div className="history-panel">
@@ -69,8 +69,8 @@ export default function Header({ history, activeId, onSelect, onNewRun }) {
                   }}
                 >
                   <div className="history-name">{r.name || r.id.slice(-8)}</div>
-                  <div style={{ fontSize: '10px', color: 'var(--muted)' }}>
-                    {(r.intent || '').replace(/_/g, ' ')} · {r.repo || ''}
+                  <div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>
+                    {(r.intent || '').replace(/_/g, ' ')} &middot; {r.repo || ''}
                   </div>
                   {r.status && (
                     <div style={{ fontSize: '10px', fontWeight: 700, color: statusColor(r.status) }}>

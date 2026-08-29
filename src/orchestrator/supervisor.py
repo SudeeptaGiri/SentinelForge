@@ -161,10 +161,21 @@ class AsyncDevSecOpsSupervisor:
                 if attempt == MAX_RETRIES:
                     return self._abort("Gate 1 (Approach) rejected after max retries")
 
-            diff = await self._step_codegen(plan)
-            if not await self._request_gate(3, "Code Review",
-                    f"Branch `{diff.branch_name}` changes {len(diff.files_changed)} file(s): {', '.join(diff.files_changed)}"):
-                return self._abort("Gate 2 (Code Review) rejected")
+            # Retry loop: user can reject with feedback, or edit files in-place, then regenerate
+            codegen_feedback: str | None = None
+            for attempt in range(MAX_RETRIES + 1):
+                diff = await self._step_codegen(plan, feedback=codegen_feedback)
+                gate_msg = f"Branch `{diff.branch_name}` changes {len(diff.files_changed)} file(s): {', '.join(diff.files_changed)}"
+                decision = await self.gate.request_gate_approval(3, "Code Review", gate_msg)
+                if decision.approved:
+                    # Apply any in-browser file edits before proceeding to infra/deploy steps
+                    if decision.edited_files:
+                        diff.file_contents.update(decision.edited_files)
+                        self.session.codegen_data = diff.model_dump()
+                    break
+                codegen_feedback = decision.feedback
+                if attempt == MAX_RETRIES:
+                    return self._abort("Gate 2 (Code Review) rejected after max retries")
 
             infra = await self._step_cost_infra(plan)
             if not await self._request_gate(4, "Cost & Infra",
@@ -197,11 +208,14 @@ class AsyncDevSecOpsSupervisor:
 
     async def _step_analyze(self, workload: WorkloadSpec) -> dict:
         self.tracker.update_step_status(1, StepStatus.IN_PROGRESS, sub_agent="AnalysisAgent", tool="mcp_graphify_query")
+        self.tracker.add_log(1, f"Indexing repository: {getattr(workload, 'repo_path', None) or 'fixtures/sample_legacy_app'}")
         repo_path = getattr(workload, "repo_path", None) or "fixtures/sample_legacy_app"
         try:
             from src.agents.analysis_agent import AnalysisAgent
             agent = AnalysisAgent()
+            self.tracker.add_log(1, "Building GraphRAG knowledge graph (AST + routes + deps)…")
             result = await asyncio.to_thread(agent.analyze_codebase, repo_path)
+            self.tracker.add_log(1, "Graph built. Summarizing architecture with Gemini…")
             summary = result.summary
             self.tracker.update_step_status(
                 1, StepStatus.COMPLETED, log_msg=f"Graphify analysis complete: {summary}"
@@ -254,7 +268,9 @@ class AsyncDevSecOpsSupervisor:
         spec_result = {"endpoints": [], "data_models": [], "workload_spec": {}, "title": workload.name}
         try:
             from src.agents.spec_agent import generate_api_specification
+            self.tracker.add_log(2, "Drafting target OpenAPI 3.1 contract with Gemini…")
             spec_result = await asyncio.to_thread(generate_api_specification, concept)
+            self.tracker.add_log(2, "Contract drafted. Estimating cost comparison…")
             self.session.spec_data = spec_result
             ep_count = len(spec_result.get("endpoints", []))
             self.tracker.update_step_status(
@@ -291,22 +307,62 @@ class AsyncDevSecOpsSupervisor:
             savings_pct=round(savings / baseline_usd * 100, 1),
             rationale=rationale,
         )
+        # Store for the /api/pipeline/{id}/analysis endpoint (drives the left-hand plan panel)
+        self.session.plan_data = plan.model_dump()
         self.tracker.update_step_status(
             2, StepStatus.COMPLETED,
             log_msg=f"Spec + proposal ready. Save ${savings}/mo ({plan.savings_pct}%). {len(spec_result.get('endpoints',[]))} target endpoint(s).",
         )
         return plan
 
-    async def _step_codegen(self, plan: MigrationPlan) -> CodeDiff:
+    async def _step_codegen(self, plan: MigrationPlan, feedback: str | None = None) -> CodeDiff:
         self.tracker.update_step_status(3, StepStatus.IN_PROGRESS, sub_agent="CodeGeneratorAgent",
                                         tool="mcp_server_git.create_branch")
         await asyncio.sleep(0.4)  # MOCK: replace with CodeGeneratorAgent.refactor_module() (Person 4)
+        # MOCK file contents — once CodeGeneratorAgent is live, this becomes its real diff output.
+        # Reviewer feedback is appended as a comment so the regenerated mock reflects the request.
+        note = f"\n# Revision requested: {feedback}" if feedback else ""
+        file_contents = {
+            "Dockerfile": (
+                "FROM python:3.11-slim\n"
+                "WORKDIR /app\n"
+                "COPY requirements.txt .\n"
+                "RUN pip install --no-cache-dir -r requirements.txt\n"
+                "COPY . .\n"
+                f"CMD [\"gunicorn\", \"-b\", \"0.0.0.0:8080\", \"app:app\"]{note}\n"
+            ),
+            "app/healthz.py": (
+                "from flask import Blueprint, jsonify\n\n"
+                "healthz_bp = Blueprint('healthz', __name__)\n\n"
+                "@healthz_bp.route('/healthz')\n"
+                "def healthz():\n"
+                "    return jsonify({'ok': True})\n"
+                f"{note}\n"
+            ),
+            "service.yaml": (
+                "apiVersion: serving.knative.dev/v1\n"
+                "kind: Service\n"
+                "metadata:\n"
+                f"  name: {plan.target_platform.lower()}-service\n"
+                "spec:\n"
+                "  template:\n"
+                "    spec:\n"
+                "      containers:\n"
+                "        - image: gcr.io/PROJECT/app\n"
+                "          ports:\n"
+                "            - containerPort: 8080\n"
+                f"{note}\n"
+            ),
+        }
         diff = CodeDiff(
             branch_name="feature/cloud-run-migration",
-            files_changed=["Dockerfile", "app/healthz.py", "service.yaml"],
+            files_changed=list(file_contents.keys()),
             diff_text="+ added /healthz endpoint for Cloud Run readiness probe",
             unit_tests_added=["test_healthz_endpoint"],
+            file_contents=file_contents,
         )
+        # Store for the /api/pipeline/{id}/analysis endpoint (drives the editable file review panel)
+        self.session.codegen_data = diff.model_dump()
         self.tracker.update_step_status(3, StepStatus.COMPLETED, log_msg=f"Committed to {diff.branch_name}.")
         return diff
 
@@ -362,14 +418,14 @@ def _build_vis_graph(gs: dict) -> tuple[list[dict], list[dict]]:
     node_ids: set[str] = set()
 
     COLOR = {
-        "FILE": {"background": "#1e3a5f", "border": "#5b7cfa", "font": "#a8bfff"},
-        "ROUTE": {"background": "#1a3d2b", "border": "#33c481", "font": "#8fffc8"},
-        "DEP": {"background": "#3d2a1a", "border": "#f5a623", "font": "#ffe0a8"},
+        "FILE": {"background": "#1a1b3d", "border": "#5e6ad2", "font": "#a3acf5"},
+        "ROUTE": {"background": "#123324", "border": "#4cb782", "font": "#8fd6ae"},
+        "DEP": {"background": "#3a2a10", "border": "#e5a442", "font": "#f0c584"},
     }
 
     def add_node(nid: str, label: str, group: str) -> None:
         if nid not in node_ids:
-            c = COLOR.get(group, {"background": "#1c2436", "border": "#8892a6", "font": "#e6e9f2"})
+            c = COLOR.get(group, {"background": "#16171a", "border": "#62666d", "font": "#8a8f98"})
             nodes.append({"id": nid, "label": label, "group": group,
                           "color": {"background": c["background"], "border": c["border"]},
                           "font": {"color": c["font"]}})
@@ -386,13 +442,13 @@ def _build_vis_graph(gs: dict) -> tuple[list[dict], list[dict]]:
         # Link route to the file that likely defines it (heuristic: first file)
         if gs.get("files"):
             edges.append({"from": f"file:{gs['files'][0]}", "to": rid,
-                          "label": "exposes", "arrows": "to", "color": {"color": "#33c481"}})
+                          "label": "exposes", "arrows": "to", "color": {"color": "#4cb782"}})
 
     for dep in gs.get("dependencies", []):
         did = f"dep:{dep}"
         add_node(did, dep, "DEP")
         for f in gs.get("files", [])[:3]:
             edges.append({"from": f"file:{f}", "to": did,
-                          "label": "imports", "arrows": "to", "color": {"color": "#f5a623"}})
+                          "label": "imports", "arrows": "to", "color": {"color": "#e5a442"}})
 
     return nodes, edges

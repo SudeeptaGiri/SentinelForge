@@ -26,13 +26,13 @@ export default function VisGraph({ nodes, edges }) {
       edges: {
         smooth: { type: 'curvedCW', roundness: 0.2 },
         width: 1.5,
-        color: { color: '#5b7cfa', highlight: '#33c481' },
+        color: { color: '#34363c', highlight: '#5e6ad2' },
       },
       nodes: {
         shape: 'dot',
-        size: 14,
+        size: 13,
         borderWidth: 2,
-        font: { size: 11, color: '#e6e9f2' },
+        font: { size: 11, color: '#8a8f98' },
       },
     };
 

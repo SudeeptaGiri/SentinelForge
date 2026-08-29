@@ -56,6 +56,8 @@ class PipelineSession:
     graph_edges: list[dict] | None = None          # vis.js edge list for UI graph
     intent: str = "migrate_cloud"
     spec_data: dict[str, Any] | None = None        # populated after step 2 (SpecAgent)
+    plan_data: dict[str, Any] | None = None        # populated after step 2 (MigrationPlan)
+    codegen_data: dict[str, Any] | None = None     # populated after step 3 (CodeDiff, editable)
     app_name: str = ""
     repo_path: str = ""
 

@@ -44,6 +44,7 @@ class PipelineStartRequest(BaseModel):
 class GateDecisionRequest(BaseModel):
     approved: bool
     feedback: str | None = None
+    edited_files: dict[str, str] | None = None
 
 
 @router.get("/")
@@ -112,6 +113,8 @@ async def pipeline_analysis(pipeline_id: str) -> dict:
     return {
         "analysis": session.analysis_data,
         "spec": session.spec_data,
+        "plan": session.plan_data,
+        "codegen": session.codegen_data,
         "graph": {
             "nodes": session.graph_nodes or [],
             "edges": session.graph_edges or [],
@@ -142,7 +145,7 @@ async def submit_gate_decision(pipeline_id: str, step_id: int, decision: GateDec
     session = state_manager.get_session(pipeline_id)
     if not session:
         raise HTTPException(status_code=404, detail="Unknown pipeline_id")
-    resolved = session.gate.submit_decision(step_id, decision.approved, decision.feedback)
+    resolved = session.gate.submit_decision(step_id, decision.approved, decision.feedback, decision.edited_files)
     if not resolved:
         raise HTTPException(status_code=409, detail="No pending gate awaiting a decision for this step")
     return {"resolved": True}

@@ -177,6 +177,10 @@ class CodeDiff(BaseModel):
         default_factory=list,
         description="Names of unit test cases added or updated"
     )
+    file_contents: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Proposed full file content keyed by path, editable in the review UI before approval"
+    )
 
 
 class InfraArtifacts(BaseModel):
@@ -209,6 +213,10 @@ class GateDecision(BaseModel):
     feedback: Optional[str] = Field(
         default=None,
         description="Optional reviewer feedback, adjustments, or rejection reason"
+    )
+    edited_files: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Reviewer-edited file contents (path -> content), applied before proceeding"
     )
 
 
@@ -249,6 +257,7 @@ class PipelineStepView(BaseModel):
     status: StepStatus
     active_tool: str = ""
     latest_log: str = ""
+    logs: List[str] = Field(default_factory=list, description="Recent log lines for this step, oldest first")
     elapsed_seconds: float = 0.0
 
 

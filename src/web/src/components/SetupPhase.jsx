@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
+import { IconCloud, IconZap, IconSparkle, IconBlueprint } from './Icons';
 
 const INTENTS = [
-  { value: 'migrate_cloud', icon: '☁️', label: 'Migrate to Cloud', desc: 'Optimize legacy GCE VM to serverless Cloud Run' },
-  { value: 'migrate_modern', icon: '⚡', label: 'Modernise Stack', desc: 'Refactor monolith into microservices & containers' },
-  { value: 'new_feature', icon: '✨', label: 'Add New Feature', desc: 'Implement new REST endpoint with self-healing tests' },
-  { value: 'from_scratch', icon: '🏗️', label: 'Build From Scratch', desc: 'Contract-first OpenAPI generation with SpecAgent' },
+  { value: 'migrate_cloud', Icon: IconCloud, label: 'Migrate to Cloud', desc: 'Optimize legacy GCE VM to serverless Cloud Run' },
+  { value: 'migrate_modern', Icon: IconZap, label: 'Modernise Stack', desc: 'Refactor monolith into microservices & containers' },
+  { value: 'new_feature', Icon: IconSparkle, label: 'Add New Feature', desc: 'Implement new REST endpoint with self-healing tests' },
+  { value: 'from_scratch', Icon: IconBlueprint, label: 'Build From Scratch', desc: 'Contract-first OpenAPI generation with SpecAgent' },
 ];
 
 export default function SetupPhase({ onStart, loading }) {
@@ -30,8 +31,7 @@ export default function SetupPhase({ onStart, loading }) {
             />
             <button
               type="button"
-              className="btn btn-sm"
-              style={{ background: '#1c2436', color: 'var(--accent)', border: '1px solid var(--panel-border)' }}
+              className="btn btn-secondary btn-sm"
               onClick={() => {
                 setRepo('fixtures/sample_legacy_app');
                 setName('legacy-flask-app');
@@ -61,9 +61,9 @@ export default function SetupPhase({ onStart, loading }) {
                 className={`intent-card${intent === i.value ? ' selected' : ''}`}
                 onClick={() => setIntent(i.value)}
               >
-                <span className="intent-icon">{i.icon}</span>
+                <span className="intent-icon"><i.Icon size={18} /></span>
                 <span className="intent-label">{i.label}</span>
-                <span style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>{i.desc}</span>
+                <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{i.desc}</span>
               </label>
             ))}
           </div>
@@ -73,9 +73,9 @@ export default function SetupPhase({ onStart, loading }) {
           className="btn btn-primary btn-lg"
           disabled={loading || !repo.trim()}
           onClick={() => onStart({ repo, name, intent })}
-          style={{ width: '100%', marginTop: '8px' }}
+          style={{ marginTop: 'var(--space-1)' }}
         >
-          {loading ? '⏳ Initiating DevSecOps Supervisor…' : '▶ Analyse Codebase & Build Migration Plan'}
+          {loading ? 'Initiating DevSecOps Supervisor…' : 'Analyse Codebase & Build Migration Plan'}
         </button>
       </div>
     </section>
