@@ -105,3 +105,12 @@ def test_server_cost_tool_returns_dict():
     assert isinstance(result, dict)
     assert "total_monthly_cost_usd" in result
     assert result["total_monthly_cost_usd"] > 0
+
+
+def test_fallback_parse_comma_formatted_numbers():
+    agent = CostScalingAgent()
+    # Comma-formatted request count must not raise ValueError
+    specs = agent._fallback_parse("3 Cloud Run services, 100,000 requests per month")
+    assert any(s["type"] == "cloud_run" for s in specs)
+    cr = next(s for s in specs if s["type"] == "cloud_run")
+    assert cr["requests_per_month"] == 100_000

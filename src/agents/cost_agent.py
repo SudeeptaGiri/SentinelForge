@@ -174,7 +174,7 @@ def _fetch_live_rates(api_key: str, region: str) -> dict[str, float]:
                 "Billing API fetch failed for service %s (%s); using fallback rates",
                 svc_key, exc,
             )
-    return live
+    return dict(live)
 
 
 class CostScalingAgent:
@@ -202,7 +202,7 @@ class CostScalingAgent:
                 return _fetch_live_rates(self._gcp_api_key, region)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Live rates unavailable (%s); using hardcoded fallback", exc)
-        return _RATES
+        return dict(_RATES)
 
     # ------------------------------------------------------------------
     # Public API
@@ -280,7 +280,7 @@ class CostScalingAgent:
 
         def _num(pattern: str, default: float) -> float:
             m = re.search(pattern, lower)
-            return float(m.group(1)) if m else default
+            return float(m.group(1).replace(",", "")) if m else default
 
         if "cloud run" in lower:
             services.append({
