@@ -1,69 +1,17 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SentinelForge — Live Pipeline Tracker</title>
+  <title>SentinelForge &mdash; AI DevSecOps Agent</title>
   <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
 </head>
 <body>
-  <header class="app-header">
-    <div class="brand">
-      <span class="brand-mark">&#9679;</span>
-      <div>
-        <h1>SentinelForge</h1>
-        <p>Autonomous AI DevSecOps Agent — Live Pipeline Tracker</p>
-      </div>
-    </div>
-    <button id="start-btn" class="btn btn-primary">Run Migration/Cost Demo</button>
-  </header>
-
-  <main class="layout">
-    <section class="stepper-panel">
-      <div class="stepper-header">
-        <h2>Pipeline Steps</h2>
-        <div class="progress-track">
-          <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
-        </div>
-        <span id="progress-label">0% complete</span>
-      </div>
-      <ol id="stepper" class="stepper">
-        {% for step in steps %}
-        <li class="step" data-step-id="{{ loop.index }}">
-          <div class="step-icon" id="icon-{{ loop.index }}">{{ loop.index }}</div>
-          <div class="step-body">
-            <div class="step-title-row">
-              <span class="step-name">{{ step }}</span>
-              <span class="step-status" id="status-{{ loop.index }}">PENDING</span>
-            </div>
-            <div class="step-meta">
-              <span id="agent-{{ loop.index }}" class="step-agent"></span>
-              <span id="log-{{ loop.index }}" class="step-log"></span>
-            </div>
-          </div>
-        </li>
-        {% endfor %}
-      </ol>
-    </section>
-
-    <aside class="panel">
-      <h2>Pipeline Status</h2>
-      <p id="pipeline-id" class="muted">No active run yet.</p>
-      <div id="result-box" class="result-box hidden"></div>
-    </aside>
-  </main>
-
-  <div id="gate-modal" class="modal hidden">
-    <div class="modal-card">
-      <h3 id="gate-title">Confirmation Required</h3>
-      <p id="gate-summary"></p>
-      <div class="modal-actions">
-        <button id="gate-reject" class="btn btn-danger">Reject</button>
-        <button id="gate-approve" class="btn btn-success">Approve &amp; Proceed</button>
-      </div>
-    </div>
-  </div>
-
-  <script src="/static/app.js"></script>
+  <div id="root"></div>
+  <script type="text/babel" src="/static/app.js"></script>
 </body>
 </html>

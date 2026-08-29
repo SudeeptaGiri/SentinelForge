@@ -18,7 +18,7 @@ import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -30,17 +30,15 @@ router = APIRouter()
 state_manager = SessionStateManager()
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+_DIST_DIR = Path(__file__).resolve().parent / "dist"
+_DIST_INDEX = _DIST_DIR / "index.html"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
-# Demo workload used for the Migration/Cost-Optimization scenario.
-DEMO_WORKLOAD = WorkloadSpec(
-    name="legacy-invoice-api",
-    cpu_cores=4,
-    ram_gb=16,
-    disk_gb=100,
-    monthly_requests=500_000,
-    is_stateful=False,
-)
+
+class PipelineStartRequest(BaseModel):
+    repo_path: str = "fixtures/sample_legacy_app"
+    app_name: str = "legacy-app"
+    intent: str = "migrate_cloud"  # new_feature | from_scratch | migrate_cloud | migrate_modern
 
 
 class GateDecisionRequest(BaseModel):
@@ -48,24 +46,50 @@ class GateDecisionRequest(BaseModel):
     feedback: str | None = None
 
 
-@router.get("/", response_class=HTMLResponse)
-async def index(request: Request) -> HTMLResponse:
+@router.get("/")
+async def index(request: Request):
+    if _DIST_INDEX.exists():
+        return FileResponse(str(_DIST_INDEX))
     return templates.TemplateResponse(request, "index.html", {"steps": PIPELINE_STEPS})
 
 
 @router.post("/api/pipeline/start")
-async def start_pipeline() -> dict:
+async def start_pipeline(body: PipelineStartRequest) -> dict:
+    workload = WorkloadSpec(
+        name=body.app_name,
+        repo_path=body.repo_path,
+    )
     session = state_manager.create_session(PIPELINE_STEPS)
+    session.intent    = body.intent
+    session.app_name  = body.app_name
+    session.repo_path = body.repo_path
     supervisor = AsyncDevSecOpsSupervisor(session)
 
     async def _run() -> None:
         try:
-            await supervisor.run_pipeline(DEMO_WORKLOAD)
-        except Exception as exc:  # noqa: BLE001 - logged on the session for the UI to surface
+            await supervisor.run_pipeline(workload)
+        except Exception as exc:  # noqa: BLE001
             session.error = str(exc)
 
     asyncio.create_task(_run())
     return {"pipeline_id": session.pipeline_id}
+
+
+@router.get("/api/pipelines")
+async def list_pipelines() -> list[dict]:
+    """Returns metadata for all in-memory sessions (for history panel)."""
+    sessions = state_manager._sessions
+    return [
+        {
+            "pipeline_id": s.pipeline_id,
+            "app_name":    s.app_name,
+            "repo_path":   s.repo_path,
+            "intent":      s.intent,
+            "result":      s.result,
+            "error":       s.error,
+        }
+        for s in sessions.values()
+    ]
 
 
 @router.get("/api/pipeline/{pipeline_id}/state")
@@ -77,6 +101,21 @@ async def pipeline_state(pipeline_id: str) -> dict:
         **session.tracker.snapshot(),
         "result": session.result,
         "error": session.error,
+    }
+
+
+@router.get("/api/pipeline/{pipeline_id}/analysis")
+async def pipeline_analysis(pipeline_id: str) -> dict:
+    session = state_manager.get_session(pipeline_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Unknown pipeline_id")
+    return {
+        "analysis": session.analysis_data,
+        "spec": session.spec_data,
+        "graph": {
+            "nodes": session.graph_nodes or [],
+            "edges": session.graph_edges or [],
+        },
     }
 
 
@@ -111,7 +150,6 @@ async def submit_gate_decision(pipeline_id: str, step_id: int, decision: GateDec
 
 @router.get("/api/pipeline/{pipeline_id}/audit")
 async def gate_audit_log(pipeline_id: str) -> list[dict]:
-    """Returns the compliance audit trail of all gate decisions for this run."""
     session = state_manager.get_session(pipeline_id)
     if not session:
         raise HTTPException(status_code=404, detail="Unknown pipeline_id")

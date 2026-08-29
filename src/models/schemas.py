@@ -61,6 +61,7 @@ class WorkloadSpec(BaseModel):
     disk_gb: float = Field(default=10.0, description="Allocated disk storage in Gigabytes")
     monthly_requests: int = Field(default=100000, description="Estimated monthly HTTP/RPC requests")
     is_stateful: bool = Field(default=False, description="Whether the service maintains local persistent state/session")
+    repo_path: Optional[str] = Field(default=None, description="Optional local repository directory or remote Git URL")
 
 
 class AnalysisResult(BaseModel):
