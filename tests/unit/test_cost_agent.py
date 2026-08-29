@@ -95,3 +95,13 @@ def test_estimate_from_architecture_returns_estimate(monkeypatch):
     assert isinstance(result.total_monthly_cost_usd, float)
     assert result.total_monthly_cost_usd > 0
     assert result.region == "us-central1"
+
+
+def test_server_cost_tool_returns_dict():
+    from src.mcp_servers.server_cost import estimate_architecture_cost_tool
+    result = estimate_architecture_cost_tool(
+        "1 Cloud Run service, 2 vCPU, 1 GB RAM, 100000 requests per month"
+    )
+    assert isinstance(result, dict)
+    assert "total_monthly_cost_usd" in result
+    assert result["total_monthly_cost_usd"] > 0
