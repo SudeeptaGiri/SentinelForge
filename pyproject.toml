@@ -30,6 +30,14 @@ python-dotenv = "^1.2.2"
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1.0"
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

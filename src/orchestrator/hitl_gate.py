@@ -21,7 +21,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.models.schemas import GateDecision, GateRequest, StepStatus
 
@@ -116,6 +116,7 @@ class GateAuditEntry:
     decided_at: float | None = None
     approved: bool | None = None
     feedback: str | None = None
+    artifact: dict = field(default_factory=dict)
 
     @property
     def wait_seconds(self) -> float:
@@ -148,11 +149,13 @@ class AsyncHITLGateController:
         step_name: str,
         summary: str,
         tools_used: list[str] | None = None,
+        artifact: dict | None = None,
     ) -> GateDecision:
         tools_used = tools_used or []
         entry = GateAuditEntry(
             step_id=step_id, gate_name=step_name, summary=summary,
             tools_used=tools_used, requested_at=time.time(),
+            artifact=artifact or {},
         )
         self.audit_log.append(entry)
         logger.info("Gate %d (%s) requested: %s", step_id, step_name, summary)
@@ -209,9 +212,26 @@ class AsyncHITLGateController:
     def get_audit_log(self) -> list[dict]:
         return [
             {
-                "step_id": e.step_id, "gate_name": e.gate_name, "summary": e.summary,
-                "tools_used": e.tools_used, "approved": e.approved,
-                "feedback": e.feedback, "wait_seconds": e.wait_seconds,
+                "step_id": e.step_id,
+                "gate_name": e.gate_name,
+                "summary": e.summary,
+                "tools_used": e.tools_used,
+                "approved": e.approved,
+                "feedback": e.feedback,
+                "wait_seconds": e.wait_seconds,
+                "artifact": e.artifact,
             }
             for e in self.audit_log
         ]
+
+    def get_gate_detail(self, step_id: int) -> dict | None:
+        """Returns the latest audit entry for a given step_id, or None if not found."""
+        for entry in reversed(self.audit_log):
+            if entry.step_id == step_id:
+                return {
+                    "step_id": entry.step_id,
+                    "gate_name": entry.gate_name,
+                    "summary": entry.summary,
+                    "artifact": entry.artifact,
+                }
+        return None
