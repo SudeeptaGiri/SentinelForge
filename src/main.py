@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()  # load .env into os.environ before any agent/client code runs
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
@@ -28,7 +32,54 @@ from src.orchestrator.state_manager import SessionStateManager
 from src.orchestrator.supervisor import DevSecOpsSupervisor
 from src.web.routes import router as web_router
 
-app = FastAPI(title="SentinelForge DevSecOps Agent")
+_TAGS_METADATA = [
+    {
+        "name": "Pipeline",
+        "description": (
+            "Start and monitor autonomous DevSecOps pipeline runs. "
+            "Each run is identified by a `pipeline_id` returned from `/api/pipeline/start`."
+        ),
+    },
+    {
+        "name": "Gates",
+        "description": (
+            "Human-in-the-loop (HITL) approval gates. "
+            "The pipeline pauses at each gate and waits for an Approve or Reject decision "
+            "before proceeding to the next step."
+        ),
+    },
+    {
+        "name": "Cost Estimation",
+        "description": (
+            "Estimate monthly GCP running costs from a plain-English architecture description. "
+            "Prices are fetched live from the GCP Cloud Billing Catalog API when `GCP_API_KEY` "
+            "is set; hardcoded fallback rates are used otherwise."
+        ),
+    },
+    {
+        "name": "Health",
+        "description": "Service liveness check.",
+    },
+]
+
+app = FastAPI(
+    title="SentinelForge DevSecOps Agent",
+    description=(
+        "Autonomous, multi-agent DevSecOps system built on Google Cloud. "
+        "Takes a project idea, bug ticket, or existing repository and carries it "
+        "end-to-end through analysis, code generation, cost/infra planning, security "
+        "auditing, and deployment — with human-in-the-loop (HITL) approval gates at "
+        "every critical decision point.\n\n"
+        "**Authentication:** Set `GEMINI_API_KEY` and optionally `GCP_API_KEY` (for live "
+        "pricing) in your `.env` file before starting the server.\n\n"
+        "**Quick start:** `POST /api/pipeline/start` → poll `GET /api/pipeline/{id}/state` "
+        "→ approve/reject gates via `POST /api/pipeline/{id}/gate/{step_id}/decision`."
+    ),
+    version="1.0.0",
+    openapi_tags=_TAGS_METADATA,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 app.include_router(web_router)
 
 dist_assets_dir = Path(__file__).resolve().parent / "web" / "dist" / "assets"
@@ -42,8 +93,9 @@ app.mount(
 )
 
 
-@app.get("/health")
+@app.get("/health", tags=["Health"], summary="Service liveness check")
 def health_check() -> dict:
+    """Returns `{"status": "ok"}` when the service is running."""
     return {"status": "ok"}
 
 
