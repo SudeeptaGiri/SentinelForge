@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()  # load .env into os.environ before any agent/client code runs
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
