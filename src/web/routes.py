@@ -48,6 +48,11 @@ class GateDecisionRequest(BaseModel):
     feedback: str | None = None
 
 
+class CostEstimateRequest(BaseModel):
+    architecture_text: str
+    region: str = "us-central1"
+
+
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "index.html", {"steps": PIPELINE_STEPS})
@@ -116,6 +121,16 @@ async def gate_audit_log(pipeline_id: str) -> list[dict]:
     if not session:
         raise HTTPException(status_code=404, detail="Unknown pipeline_id")
     return session.gate.get_audit_log()
+
+
+@router.post("/api/cost/estimate")
+async def cost_estimate(request: CostEstimateRequest) -> dict:
+    """Estimate monthly GCP running cost from a plain-text architecture description."""
+    from src.mcp_servers.server_cost import estimate_architecture_cost
+    try:
+        return estimate_architecture_cost(request.architecture_text, request.region)
+    except Exception as exc:  # noqa: BLE001 - never let pricing errors crash the UI
+        raise HTTPException(status_code=422, detail=f"Cost estimation failed: {exc}")
 
 
 @router.get("/api/pipeline/{pipeline_id}/gate/{step_id}/detail")
