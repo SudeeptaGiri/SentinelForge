@@ -9,9 +9,13 @@ Motive: Ground code-gen decisions in the real structure of the repository
 """
 
 import json
+import logging
 import os
+import time
 from typing import Any, Dict, List, Optional, Tuple
+
 from google.adk.agents import Agent
+from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response
 
 from src.models.schemas import AnalysisResult, WorkloadSpec
 from src.mcp_servers.server_graphify import (
@@ -28,8 +32,8 @@ from src.utils.repo_loader import is_git_url, get_repo_name_from_url
 class AnalysisAgent:
     """Analyzes codebase structure and change impact via Graphify GraphRAG and Gemini."""
 
-    def __init__(self, model_name: str = "gemini-2.5-pro"):
-        self.model_name = model_name
+    def __init__(self, model_name: str | None = None):
+        self.model_name = model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self._init_adk_agent()
 
     def _init_adk_agent(self) -> None:
@@ -73,6 +77,7 @@ class AnalysisAgent:
         Returns:
             Structured AnalysisResult matching the shared contract for downstream agents.
         """
+        log_agent_call("AnalysisAgent", "analyze_codebase", f"repo={repo_path}")
         # 1. Index the repository with Graphify GraphRAG (MCP Server Layer 4)
         index_res = index_repository(repo_path)
         graph_summary = index_res.get("summary", {})
@@ -143,11 +148,15 @@ class AnalysisAgent:
 
         if client:
             try:
+                log_llm_request("AnalysisAgent", self.model_name, prompt, purpose="Architecture Summary")
+                start_t = time.perf_counter()
                 response = client.models.generate_content(
                     model=self.model_name,
                     contents=prompt,
                 )
+                duration = time.perf_counter() - start_t
                 if response and response.text:
+                    log_llm_response("AnalysisAgent", self.model_name, response.text, duration_sec=duration)
                     clean_text = response.text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
                     parsed = json.loads(clean_text)
                     return parsed.get("summary", ""), parsed.get("recommendations", [])

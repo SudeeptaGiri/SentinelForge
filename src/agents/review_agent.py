@@ -13,8 +13,11 @@ Returns empty report if no issues found (0 issues is valid).
 from __future__ import annotations
 
 import ast
+import concurrent.futures
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +25,7 @@ from pathlib import Path
 import yaml
 
 from src.utils.genai_client import build_genai_client
+from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +131,9 @@ class ReviewAgent:
         ".go": "go",
     }
 
-    def __init__(self, model: str = "gemini-2.0-flash-exp"):
+    def __init__(self, model: str | None = None):
         """Initialize review agent."""
-        self._model = model
+        self._model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self._client = None
         self._auth_mode = None
 
@@ -227,6 +231,48 @@ class ReviewAgent:
         # Save report
         self._save_report(report, generated_root)
         self._log_summary(report)
+
+        return report
+
+    def review_code_dict(
+            self,
+            code_files: dict[str, str],
+            mode: str = "both",
+    ) -> ReviewReport:
+        """Review in-memory dictionary of code files directly.
+
+        Args:
+            code_files: Mapping of relative file path -> file content string.
+            mode: "normal", "epic", or "both"
+
+        Returns:
+            ReviewReport
+        """
+        log_agent_call("ReviewAgent", "review_code_dict", f"files={len(code_files)}, mode={mode}")
+        if not self.enabled:
+            logger.warning("ReviewAgent disabled - ADC auth required")
+            return ReviewReport()
+
+        if not code_files:
+            return ReviewReport()
+
+        report = ReviewReport()
+
+        # Parallel review execution when mode is "both"
+        if mode == "both":
+            logger.info("⚡ Running Parallel Normal & Epic Reviews...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                future_normal = executor.submit(self._normal_review, code_files)
+                future_epic = executor.submit(self._epic_review, code_files)
+                report.normal_issues = future_normal.result()
+                report.epic_issues.extend(future_epic.result())
+        elif mode == "normal":
+            logger.info("📋 Running Normal Review (Tech Lead mode)...")
+            report.normal_issues = self._normal_review(code_files)
+        elif mode == "epic":
+            logger.info("🔒 Running Epic Review (Architect mode)...")
+            epic_issues = self._epic_review(code_files)
+            report.epic_issues.extend(epic_issues)
 
         return report
 
@@ -411,10 +457,14 @@ If code is perfect, return: []
 """
 
             try:
+                log_llm_request("ReviewAgent", self._model, prompt, purpose=f"Tech Lead Review: {file_path}")
+                start_t = time.perf_counter()
                 response = self._client.models.generate_content(
                     model=self._model,
                     contents=prompt
                 )
+                duration = time.perf_counter() - start_t
+                log_llm_response("ReviewAgent", self._model, response.text, duration_sec=duration)
                 
                 issues_json = self._extract_json(response.text)
                 
@@ -474,10 +524,14 @@ If no security or architectural issues, return: []
 """
 
             try:
+                log_llm_request("ReviewAgent", self._model, prompt, purpose=f"Architect Review: {file_path}")
+                start_t = time.perf_counter()
                 response = self._client.models.generate_content(
                     model=self._model,
                     contents=prompt
                 )
+                duration = time.perf_counter() - start_t
+                log_llm_response("ReviewAgent", self._model, response.text, duration_sec=duration)
                 
                 issues_json = self._extract_json(response.text)
                 

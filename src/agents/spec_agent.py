@@ -9,12 +9,14 @@ Motive: Catch ambiguity and spec misalignment early, before expensive code
         generation, testing, or infra provisioning steps run.
 """
 
+import time
 from typing import Any, Dict, List, Optional, Tuple
 import yaml
 from google.adk.agents import Agent
 
 from src.models.schemas import SpecResult, WorkloadSpec
 from src.utils.gcp_client import get_genai_client
+from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response
 from src.utils.speckit import (
     parse_spec,
     validate_openapi_spec,
@@ -95,6 +97,7 @@ class SpecAgent:
         Returns:
             SpecResult containing validated OpenAPI spec, endpoints, data models, and WorkloadSpec.
         """
+        log_agent_call("SpecAgent", "generate_api_spec", f"concept={concept[:80]}")
         parsed_spec, raw_spec_yaml, summary = self._synthesize_spec_with_llm(concept)
 
         title = parsed_spec.get("info", {}).get("title", "Generated Service API")
@@ -130,11 +133,15 @@ class SpecAgent:
 
         if client:
             try:
+                log_llm_request("SpecAgent", self.model_name, prompt, purpose="OpenAPI 3.1 Contract")
+                start_t = time.perf_counter()
                 response = client.models.generate_content(
                     model=self.model_name,
                     contents=prompt,
                 )
+                duration = time.perf_counter() - start_t
                 if response and response.text:
+                    log_llm_response("SpecAgent", self.model_name, response.text, duration_sec=duration)
                     raw_text = response.text.strip().removeprefix("```yaml").removeprefix("```").removesuffix("```").strip()
                     parsed = parse_spec(raw_text)
                     val_res = validate_openapi_spec(parsed)

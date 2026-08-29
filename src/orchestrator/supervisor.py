@@ -30,6 +30,7 @@ from src.orchestrator.gemini_client import GeminiClient
 from src.orchestrator.hitl_gate import HITLGateController
 from src.orchestrator.state_manager import PipelineSession, SessionStateManager
 from src.orchestrator.steps import build_default_steps
+from src.utils.terminal_logger import log_agent_call
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,7 @@ class AsyncDevSecOpsSupervisor:
             for attempt in range(MAX_RETRIES + 1):
                 plan = await self._step_propose(workload, analysis, feedback=feedback)
                 gate_msg = f"Save ${plan.monthly_savings_usd:.2f}/mo ({plan.savings_pct}%). {plan.rationale}"
-                decision = await self.gate.request_gate_approval(2, "Architecture & Approach Proposal", gate_msg)
+                decision = await self._request_gate(2, "Architecture & Approach Proposal", gate_msg)
                 if decision.approved:
                     break
                 feedback = decision.feedback
@@ -166,7 +167,7 @@ class AsyncDevSecOpsSupervisor:
             for attempt in range(MAX_RETRIES + 1):
                 diff = await self._step_codegen(plan, feedback=codegen_feedback)
                 gate_msg = f"Branch `{diff.branch_name}` changes {len(diff.files_changed)} file(s): {', '.join(diff.files_changed)}"
-                decision = await self.gate.request_gate_approval(3, "Code Review", gate_msg)
+                decision = await self._request_gate(3, "Code Review", gate_msg)
                 if decision.approved:
                     # Apply any in-browser file edits before proceeding to infra/deploy steps
                     if decision.edited_files:
@@ -178,19 +179,22 @@ class AsyncDevSecOpsSupervisor:
                     return self._abort("Gate 2 (Code Review) rejected after max retries")
 
             infra = await self._step_cost_infra(plan)
-            if not await self._request_gate(4, "Cost & Infra",
-                    f"${plan.monthly_savings_usd:.2f}/mo savings ({plan.savings_pct:.1f}%). Terraform validated: {infra['validation_passed']}"):
+            gate4 = await self._request_gate(4, "Cost & Infra",
+                    f"${plan.monthly_savings_usd:.2f}/mo savings ({plan.savings_pct:.1f}%). Terraform validated: {infra['validation_passed']}")
+            if not gate4.approved:
                 return self._abort("Gate 3 (Cost & Infra) rejected")
 
             audit_report = await self._step_test_and_pentest(diff)
             blocked = self.pentest_agent.is_release_blocked(audit_report)
             gate_summary = (f"{len(audit_report.findings)} finding(s), overall risk {audit_report.overall_risk}."
                             + (" RELEASE BLOCKED by CRITICAL finding." if blocked else ""))
-            if not await self._request_gate(5, "Security Audit", gate_summary) or blocked:
+            gate5 = await self._request_gate(5, "Security Audit", gate_summary)
+            if not gate5.approved or blocked:
                 return self._abort("Gate 4 (Security Audit) rejected or blocked")
 
             deployment = await self._step_deploy(infra)
-            if not await self._request_gate(6, "Final Sign-off", f"Ready to deploy to {deployment['url']}"):
+            gate6 = await self._request_gate(6, "Final Sign-off", f"Ready to deploy to {deployment['url']}")
+            if not gate6.approved:
                 return self._abort("Gate 5 (Final Sign-off) rejected")
 
             self.session.result = {
@@ -207,6 +211,7 @@ class AsyncDevSecOpsSupervisor:
     # -- pipeline steps (mocks clearly marked for teammate hand-off) --------
 
     async def _step_analyze(self, workload: WorkloadSpec) -> dict:
+        log_agent_call("AsyncSupervisor", "Step 1: Codebase Analysis", f"workload={workload.name}")
         self.tracker.update_step_status(1, StepStatus.IN_PROGRESS, sub_agent="AnalysisAgent", tool="mcp_graphify_query")
         self.tracker.add_log(1, f"Indexing repository: {getattr(workload, 'repo_path', None) or 'fixtures/sample_legacy_app'}")
         repo_path = getattr(workload, "repo_path", None) or "fixtures/sample_legacy_app"
@@ -253,6 +258,7 @@ class AsyncDevSecOpsSupervisor:
             return fallback
 
     async def _step_propose(self, workload: WorkloadSpec, analysis: dict, feedback: str | None = None) -> MigrationPlan:
+        log_agent_call("AsyncSupervisor", "Step 2: Architecture & Approach Proposal", f"feedback={'yes' if feedback else 'none'}")
         # Phase A: SpecAgent generates the target API contract
         self.tracker.update_step_status(2, StepStatus.IN_PROGRESS, sub_agent="SpecAgent",
                                         tool="generate_api_specification")
@@ -316,51 +322,74 @@ class AsyncDevSecOpsSupervisor:
         return plan
 
     async def _step_codegen(self, plan: MigrationPlan, feedback: str | None = None) -> CodeDiff:
+        log_agent_call("AsyncSupervisor", "Step 3: Application Code Generation", f"target={plan.target_platform}, feedback={'yes' if feedback else 'none'}")
         self.tracker.update_step_status(3, StepStatus.IN_PROGRESS, sub_agent="CodeGeneratorAgent",
                                         tool="generate_migration_code_files")
         repo_path = getattr(self.session, "repo_path", None) or "fixtures/sample_legacy_app"
+        spec_data = getattr(self.session, "spec_data", None)
+        existing_codegen = getattr(self.session, "codegen_data", None) or {}
+        existing_files = existing_codegen.get("file_contents")
+
         try:
             from src.agents.code_gen_agent import CodeGeneratorAgent
-            self.tracker.add_log(3, f"Generating proposed files for {plan.target_platform} migration…")
             agent = CodeGeneratorAgent()
-            diff = await asyncio.to_thread(agent.generate_review_diff, plan, repo_path, feedback)
+            if spec_data and spec_data.get("endpoints"):
+                # SpecAgent produced a real API contract — implement it directly
+                self.tracker.update_step_status(3, StepStatus.IN_PROGRESS, tool="generate_code_from_spec")
+                if existing_files and feedback:
+                    self.tracker.add_log(3, f"⚡ Applying targeted updates to existing files based on feedback: '{feedback}'…")
+                else:
+                    self.tracker.add_log(3, f"Generating code implementing '{spec_data.get('title', 'the API contract')}'…")
+                diff = await asyncio.to_thread(agent.generate_from_spec, spec_data, plan.target_platform, feedback, existing_files)
+            else:
+                if existing_files and feedback:
+                    self.tracker.add_log(3, f"⚡ Applying targeted migration updates based on feedback: '{feedback}'…")
+                else:
+                    self.tracker.add_log(3, f"Generating proposed files for {plan.target_platform} migration…")
+                diff = await asyncio.to_thread(agent.generate_review_diff, plan, repo_path, feedback, existing_files)
             self.tracker.add_log(3, f"Drafted {len(diff.files_changed)} file(s): {', '.join(diff.files_changed)}")
         except Exception as exc:
             logger.warning("CodeGeneratorAgent fallback in _step_codegen: %s", exc)
             # Fallback mock — keeps the review UI usable if Gemini/ADC is unavailable.
             note = f"\n# Revision requested: {feedback}" if feedback else ""
-            file_contents = {
-                "Dockerfile": (
-                    "FROM python:3.11-slim\n"
-                    "WORKDIR /app\n"
-                    "COPY requirements.txt .\n"
-                    "RUN pip install --no-cache-dir -r requirements.txt\n"
-                    "COPY . .\n"
-                    f"CMD [\"gunicorn\", \"-b\", \"0.0.0.0:8080\", \"app:app\"]{note}\n"
-                ),
-                "app/healthz.py": (
-                    "from flask import Blueprint, jsonify\n\n"
-                    "healthz_bp = Blueprint('healthz', __name__)\n\n"
-                    "@healthz_bp.route('/healthz')\n"
-                    "def healthz():\n"
-                    "    return jsonify({'ok': True})\n"
-                    f"{note}\n"
-                ),
-                "service.yaml": (
-                    "apiVersion: serving.knative.dev/v1\n"
-                    "kind: Service\n"
-                    "metadata:\n"
-                    f"  name: {plan.target_platform.lower()}-service\n"
-                    "spec:\n"
-                    "  template:\n"
-                    "    spec:\n"
-                    "      containers:\n"
-                    "        - image: gcr.io/PROJECT/app\n"
-                    "          ports:\n"
-                    "            - containerPort: 8080\n"
-                    f"{note}\n"
-                ),
-            }
+            if existing_files and feedback:
+                file_contents = dict(existing_files)
+                for fname in list(file_contents.keys()):
+                    if "docker" in fname.lower() or "app" in fname.lower() or "service" in fname.lower():
+                        file_contents[fname] = f"{file_contents[fname].rstrip()}{note}\n"
+            else:
+                file_contents = {
+                    "Dockerfile": (
+                        "FROM python:3.11-slim\n"
+                        "WORKDIR /app\n"
+                        "COPY requirements.txt .\n"
+                        "RUN pip install --no-cache-dir -r requirements.txt\n"
+                        "COPY . .\n"
+                        f"CMD [\"gunicorn\", \"-b\", \"0.0.0.0:8080\", \"app:app\"]{note}\n"
+                    ),
+                    "app/healthz.py": (
+                        "from flask import Blueprint, jsonify\n\n"
+                        "healthz_bp = Blueprint('healthz', __name__)\n\n"
+                        "@healthz_bp.route('/healthz')\n"
+                        "def healthz():\n"
+                        "    return jsonify({'ok': True})\n"
+                        f"{note}\n"
+                    ),
+                    "service.yaml": (
+                        "apiVersion: serving.knative.dev/v1\n"
+                        "kind: Service\n"
+                        "metadata:\n"
+                        f"  name: {plan.target_platform.lower()}-service\n"
+                        "spec:\n"
+                        "  template:\n"
+                        "    spec:\n"
+                        "      containers:\n"
+                        "        - image: gcr.io/PROJECT/app\n"
+                        "          ports:\n"
+                        "            - containerPort: 8080\n"
+                        f"{note}\n"
+                    ),
+                }
             diff = CodeDiff(
                 branch_name="feature/cloud-run-migration",
                 files_changed=list(file_contents.keys()),
@@ -368,12 +397,49 @@ class AsyncDevSecOpsSupervisor:
                 unit_tests_added=["test_healthz_endpoint"],
                 file_contents=file_contents,
             )
+
+        # Run automated Code Review & Optimizer loop before HITL Gate
+        try:
+            from src.agents.review_agent import ReviewAgent
+            from src.agents.code_optimizer import CodeOptimizerAgent
+
+            reviewer = ReviewAgent()
+            if reviewer.enabled and diff.file_contents:
+                self.tracker.add_log(3, "🔍 Running automated Code Review (Tech Lead + Architect checks)…")
+                report = await asyncio.to_thread(reviewer.review_code_dict, diff.file_contents)
+                if report.all_issues:
+                    self.tracker.add_log(3, f"Review found {len(report.all_issues)} issue(s). Invoking CodeOptimizer to self-heal…")
+                    optimizer = CodeOptimizerAgent()
+                    if optimizer.enabled:
+                        optimized_files, opt_report = await asyncio.to_thread(
+                            optimizer.optimize_code_dict, diff.file_contents, report.to_dict()
+                        )
+                        diff.file_contents = optimized_files
+                        if opt_report.files_fixed:
+                            self.tracker.add_log(3, f"✅ CodeOptimizer self-healed {len(opt_report.files_fixed)} file(s): {', '.join(opt_report.files_fixed)}.")
+        except Exception as exc:
+            logger.warning("Review/Optimizer loop skipped: %s", exc)
+
+        # Persist generated files to disk in generated_output for artifact inspection
+        try:
+            from pathlib import Path
+            out_dir = Path("generated_output") / getattr(self.session, "session_id", "current")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for fname, code in diff.file_contents.items():
+                fpath = out_dir / fname
+                fpath.parent.mkdir(parents=True, exist_ok=True)
+                fpath.write_text(code, encoding="utf-8")
+            self.tracker.add_log(3, f"💾 Persisted {len(diff.file_contents)} generated file(s) to {out_dir}.")
+        except Exception as exc:
+            logger.warning("Failed to persist generated files to disk: %s", exc)
+
         # Store for the /api/pipeline/{id}/analysis endpoint (drives the editable file review panel)
         self.session.codegen_data = diff.model_dump()
         self.tracker.update_step_status(3, StepStatus.COMPLETED, log_msg=f"Committed to {diff.branch_name}.")
         return diff
 
     async def _step_cost_infra(self, plan: MigrationPlan) -> dict:
+        log_agent_call("AsyncSupervisor", "Step 4: Cost & Infra Optimization", f"platform={plan.target_platform}")
         self.tracker.update_step_status(4, StepStatus.IN_PROGRESS, sub_agent="InfraBuilderAgent",
                                         tool="templates/terraform/cloud_run.tf.j2")
         await asyncio.sleep(0.4)  # MOCK: replace with InfraBuilderAgent.render_terraform() (Person 2)
@@ -382,6 +448,7 @@ class AsyncDevSecOpsSupervisor:
         return {"validation_passed": True, "validation_findings": []}
 
     async def _step_test_and_pentest(self, diff: CodeDiff):
+        log_agent_call("AsyncSupervisor", "Step 5: Testing & Security Pentest", f"files={len(diff.files_changed)}")
         self.tracker.update_step_status(5, StepStatus.IN_PROGRESS, sub_agent="QAAgent", tool="pytest")
         await asyncio.sleep(0.3)  # MOCK: replace with QAAgent.self_heal_test_failure() (Person 4)
         self.tracker.update_step_status(5, StepStatus.IN_PROGRESS,
@@ -397,6 +464,7 @@ class AsyncDevSecOpsSupervisor:
         return report
 
     async def _step_deploy(self, infra: dict) -> dict:
+        log_agent_call("AsyncSupervisor", "Step 6: CI/CD & Deployment", "target=Cloud Run")
         self.tracker.update_step_status(6, StepStatus.IN_PROGRESS, sub_agent="InfraBuilderAgent",
                                         tool="mcp_server_cicd.trigger_cloud_build")
         await asyncio.sleep(0.4)  # MOCK: replace with real Cloud Build trigger (Person 2/5, Day 2 stretch)
@@ -405,9 +473,8 @@ class AsyncDevSecOpsSupervisor:
                                         log_msg=f"Deployed to {deployment['url']}.")
         return deployment
 
-    async def _request_gate(self, step_id: int, gate_name: str, summary: str) -> bool:
-        decision = await self.gate.request_gate_approval(step_id, gate_name, summary)
-        return decision.approved
+    async def _request_gate(self, step_id: int, gate_name: str, summary: str, artifact: dict | None = None) -> GateDecision:
+        return await self.gate.request_gate_approval(step_id, gate_name, summary, artifact=artifact)
 
     def _abort(self, reason: str) -> dict:
         self.session.result = {"status": "ABORTED", "reason": reason}

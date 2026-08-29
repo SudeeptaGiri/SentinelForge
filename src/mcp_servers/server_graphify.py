@@ -29,6 +29,12 @@ def index_repository(repo_path_or_url: str) -> Dict[str, Any]:
     """
     global _ACTIVE_GRAPH, _ACTIVE_REPO_TARGET
     try:
+        if _ACTIVE_REPO_TARGET == repo_path_or_url and _ACTIVE_GRAPH is not None:
+            return {
+                "status": "success",
+                "message": f"Using cached index for repository '{repo_path_or_url}'",
+                "summary": _ACTIVE_GRAPH.get_summary()
+            }
         graph = GraphifyKnowledgeGraph(repo_path_or_url)
         graph.build_graph()
         _ACTIVE_GRAPH = graph

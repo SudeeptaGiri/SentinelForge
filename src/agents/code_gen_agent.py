@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -26,6 +27,7 @@ from google.adk.agents import Agent
 from src.mcp_servers.server_git import GitOperations
 from src.models.schemas import CodeDiff, CostEstimate, MigrationPlan
 from src.utils.genai_client import build_genai_client
+from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +40,14 @@ class CodeGeneratorAgent:
     All generation is fully dynamic and driven by the plan specification.
     """
 
-    def __init__(self, model: str = "gemini-2.5-pro", api_key: str | None = None):
+    def __init__(self, model: str | None = None, api_key: str | None = None):
         """Initialize the code generator agent.
 
         Args:
-            model: Gemini model to use (default from agent_config.yaml)
+            model: Gemini model to use (default from agent_config.yaml or GEMINI_MODEL env)
             api_key: Deprecated for code-gen flow (ADC is required)
         """
-        self._model = model
+        self._model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
         self._client = None
         self._auth_mode = None
@@ -90,17 +92,21 @@ class CodeGeneratorAgent:
         """Initializes the Google ADK Agent representation."""
         self.adk_agent = Agent(
             name="code_gen_agent",
-            description="Generates or refactors application code files from an approved migration plan or concept.",
+            description="Generates or refactors application code files from an approved migration plan or SpecAgent contract.",
             model=self._model,
             instruction=(
                 "You are the SentinelForge Code Generation Agent. "
-                "Given an approved migration plan or feature request, generate complete, production-ready "
+                "Given an approved migration plan or a SpecAgent API contract, generate complete, production-ready "
                 "file contents (Dockerfile, application code, infra manifests) for human review.\n\n"
-                "When asked to generate or refactor code for a migration, "
-                "call `generate_migration_code_files(repo_path=..., target_platform=..., rationale=...)` directly "
-                "and present the proposed files for review."
+                "When asked to generate or refactor code for a MIGRATION of an existing repository, "
+                "call `generate_migration_code_files(repo_path=..., target_platform=..., rationale=...)`.\n\n"
+                "When asked to generate code IMPLEMENTING an API/spec produced by the Spec Alignment Agent "
+                "(i.e. a SpecAgent OpenAPI contract with endpoints and data models), "
+                "call `generate_code_from_spec(spec_json=..., target_platform=...)` instead, passing the SpecAgent "
+                "output (title, summary, spec_yaml, endpoints, data_models) as a JSON string.\n\n"
+                "Always present the proposed files for review after generation."
             ),
-            tools=[generate_migration_code_files],
+            tools=[generate_migration_code_files, generate_code_from_spec],
         )
 
     # =========================================================================
@@ -186,6 +192,7 @@ class CodeGeneratorAgent:
         Returns:
             CodeDiff object with branch name, changed files, and diff text
         """
+        log_agent_call("CodeGeneratorAgent", "generate_code_changes", f"target={plan.target_platform}")
         logger.info(f"🔄 Generating code changes for migration to {plan.target_platform}")
 
         if not self.enabled:
@@ -268,6 +275,7 @@ class CodeGeneratorAgent:
             plan: MigrationPlan,
             repo_path: str,
             feedback: str | None = None,
+            existing_files: dict[str, str] | None = None,
     ) -> CodeDiff:
         """Generates in-memory file changes for the HITL review UI (no git required).
 
@@ -282,10 +290,13 @@ class CodeGeneratorAgent:
             repo_path: Path to the application repository (read-only).
             feedback: Optional reviewer feedback from a previous rejection,
                 appended to the generation prompt for regeneration.
+            existing_files: Optional dict of previously generated files. If provided
+                with feedback, only affected files are updated (token-efficient).
 
         Returns:
             CodeDiff with `file_contents` populated (no branch/commit yet).
         """
+        log_agent_call("CodeGeneratorAgent", "generate_review_diff", f"platform={plan.target_platform}, feedback={'yes' if feedback else 'no'}")
         if not self.enabled:
             raise RuntimeError(
                 "Code generation requires ADC-authenticated Gemini client"
@@ -301,6 +312,49 @@ class CodeGeneratorAgent:
         plan_text = yaml.dump(plan_dict, default_flow_style=False)
         if feedback:
             plan_text += f"\nREVISION REQUESTED BY REVIEWER: {feedback}\n"
+
+        # Targeted differential update if existing files and feedback are present
+        if existing_files and feedback:
+            logger.info("⚡ Performing targeted differential update for %d existing files...", len(existing_files))
+            affected = self._identify_affected_files(existing_files, feedback, plan_text)
+            file_contents = dict(existing_files)
+
+            for fname in affected.get("delete", []):
+                file_contents.pop(fname, None)
+
+            for fname in affected.get("modify", []):
+                if fname in file_contents:
+                    logger.info("  ✏️ Selectively updating %s...", fname)
+                    updated = self._modify_file_with_feedback(fname, file_contents[fname], feedback, plan_text)
+                    if fname.endswith(".py"):
+                        is_valid, error = self._validate_python_code(updated)
+                        if not is_valid:
+                            updated = self._regenerate_with_error(plan_text, fname, f"Update based on {feedback}", error)
+                    file_contents[fname] = updated
+
+            for finfo in affected.get("create", []):
+                fname = finfo["name"]
+                fpurpose = finfo.get("purpose", "")
+                logger.info("  ➕ Selectively creating %s...", fname)
+                code = self._generate_single_file(plan_text, fname, fpurpose)
+                if fname.endswith(".py"):
+                    is_valid, error = self._validate_python_code(code)
+                    if not is_valid:
+                        code = self._regenerate_with_error(plan_text, fname, fpurpose, error)
+                file_contents[fname] = code
+
+            branch_name = self._derive_branch_name(plan)
+            diff = CodeDiff(
+                branch_name=branch_name,
+                files_changed=list(file_contents.keys()),
+                diff_text=f"Selectively updated {len(affected.get('modify', [])) + len(affected.get('create', []))} file(s) per feedback.",
+                unit_tests_added=[],
+                file_contents=file_contents,
+            )
+            self._last_branch = branch_name
+            self._last_files_changed = diff.files_changed
+            self._last_code_diff = diff
+            return diff
 
         files_to_generate = self._determine_migration_files(plan_text, repo_dir)
         file_contents: dict[str, str] = {}
@@ -327,6 +381,132 @@ class CodeGeneratorAgent:
             files_changed=list(file_contents.keys()),
             diff_text=f"Proposed {len(file_contents)} file(s) for {plan.target_platform} migration.",
             unit_tests_added=[],
+            file_contents=file_contents,
+        )
+        self._last_branch = branch_name
+        self._last_files_changed = diff.files_changed
+        self._last_code_diff = diff
+        return diff
+
+    def generate_from_spec(
+            self,
+            spec: dict,
+            target_platform: str = "CloudRun",
+            feedback: str | None = None,
+            existing_files: dict[str, str] | None = None,
+    ) -> CodeDiff:
+        """Generates in-memory application files implementing a SpecAgent contract.
+
+        Unlike `generate_review_diff` (migration-diff of an existing repo) or
+        `generate_code_changes` (git branch/commit), this drives file
+        generation directly from SpecAgent's output — the OpenAPI YAML,
+        endpoints, and data models it produced — so the code that gets
+        written actually implements the approved API contract instead of a
+        generic migration Dockerfile/healthz mock.
+
+        Args:
+            spec: SpecAgent output dict (title, summary, spec_yaml, endpoints,
+                data_models, workload_spec) as produced by
+                `spec_agent.generate_api_specification`.
+            target_platform: Target deployment platform, e.g. 'CloudRun'.
+            feedback: Optional reviewer feedback from a previous rejection,
+                appended to the generation prompt for regeneration.
+            existing_files: Optional dict of previously generated files. If provided
+                with feedback, only affected files are updated (token-efficient).
+
+        Returns:
+            CodeDiff with `file_contents` populated (no branch/commit yet).
+        """
+        log_agent_call("CodeGeneratorAgent", "generate_from_spec", f"title={spec.get('title', 'API')}, target={target_platform}")
+        if not self.enabled:
+            raise RuntimeError(
+                "Code generation requires ADC-authenticated Gemini client"
+            )
+
+        endpoints = spec.get("endpoints", [])
+        data_models = spec.get("data_models", [])
+        plan_dict = {
+            "title": spec.get("title", "Generated Service"),
+            "summary": spec.get("summary", ""),
+            "target_platform": target_platform,
+            "endpoints": endpoints,
+            "data_models": data_models,
+        }
+        plan_text = yaml.dump(plan_dict, default_flow_style=False, sort_keys=False)
+        spec_yaml = spec.get("spec_yaml") or spec.get("raw_spec")
+        if spec_yaml:
+            plan_text += f"\n\nFull OpenAPI 3.1 contract to implement:\n{spec_yaml}\n"
+        if feedback:
+            plan_text += f"\nREVISION REQUESTED BY REVIEWER: {feedback}\n"
+
+        slug = re.sub(r"[^a-z0-9]+", "-", str(spec.get("title", "spec-service")).lower()).strip("-") or "spec-service"
+        branch_name = f"feature/{slug}"
+
+        # Targeted differential update if existing files and feedback are present
+        if existing_files and feedback:
+            logger.info("⚡ Performing targeted differential update for %d existing files...", len(existing_files))
+            affected = self._identify_affected_files(existing_files, feedback, plan_text)
+            file_contents = dict(existing_files)
+
+            for fname in affected.get("delete", []):
+                file_contents.pop(fname, None)
+
+            for fname in affected.get("modify", []):
+                if fname in file_contents:
+                    logger.info("  ✏️ Selectively updating %s...", fname)
+                    updated = self._modify_file_with_feedback(fname, file_contents[fname], feedback, plan_text)
+                    if fname.endswith(".py"):
+                        is_valid, error = self._validate_python_code(updated)
+                        if not is_valid:
+                            updated = self._regenerate_with_error(plan_text, fname, f"Update based on {feedback}", error)
+                    file_contents[fname] = updated
+
+            for finfo in affected.get("create", []):
+                fname = finfo["name"]
+                fpurpose = finfo.get("purpose", "")
+                logger.info("  ➕ Selectively creating %s...", fname)
+                code = self._generate_single_file(plan_text, fname, fpurpose)
+                if fname.endswith(".py"):
+                    is_valid, error = self._validate_python_code(code)
+                    if not is_valid:
+                        code = self._regenerate_with_error(plan_text, fname, fpurpose, error)
+                file_contents[fname] = code
+
+            diff = CodeDiff(
+                branch_name=branch_name,
+                files_changed=list(file_contents.keys()),
+                diff_text=f"Selectively updated {len(affected.get('modify', [])) + len(affected.get('create', []))} file(s) implementing '{spec.get('title', 'the API contract')}'.",
+                unit_tests_added=[f for f in file_contents if "test" in f.lower()],
+                file_contents=file_contents,
+            )
+            self._last_branch = branch_name
+            self._last_files_changed = diff.files_changed
+            self._last_code_diff = diff
+            return diff
+
+        logger.info("Determining file structure for spec-driven generation…")
+        file_structure = self._determine_file_structure(plan_text)
+
+        file_contents: dict[str, str] = {}
+        for file_info in file_structure:
+            file_name = file_info["name"]
+            file_purpose = file_info.get("purpose", "")
+            code = self._generate_single_file(plan_text, file_name, file_purpose)
+
+            if file_name.endswith(".py"):
+                is_valid, error = self._validate_python_code(code)
+                if not is_valid:
+                    logger.warning("Validation failed for %s: %s", file_name, error)
+                    code = self._regenerate_with_error(plan_text, file_name, file_purpose, error)
+
+            file_contents[file_name] = code
+            logger.info("  Generated: %s", file_name)
+
+        diff = CodeDiff(
+            branch_name=branch_name,
+            files_changed=list(file_contents.keys()),
+            diff_text=f"Generated {len(file_contents)} file(s) implementing '{spec.get('title', 'the API contract')}'.",
+            unit_tests_added=[f for f in file_contents if "test" in f.lower()],
             file_contents=file_contents,
         )
         self._last_branch = branch_name
@@ -794,6 +974,133 @@ Return the COMPLETE modified file contents.
         extractor = self._get_extractor_for_file(file_name)
         return self._generate_with_retry(prompt, extractor)
 
+    def _identify_affected_files(
+            self,
+            existing_files: dict[str, str],
+            feedback: str,
+            plan_text: str,
+    ) -> dict:
+        """Classifies which existing files must be modified, created, or deleted based on feedback.
+
+        Args:
+            existing_files: Dictionary mapping filenames to existing content.
+            feedback: Reviewer rejection feedback.
+            plan_text: Plan/spec context string.
+
+        Returns:
+            dict with keys "modify": list[str], "create": list[dict], "delete": list[str]
+        """
+        file_summary = "\n".join(f"- {fname} ({len(code.splitlines())} lines)" for fname, code in existing_files.items())
+        prompt = f"""<role>
+You are an expert software architect analyzing code review feedback to decide which files need changes.
+</role>
+
+<task>
+A human reviewer gave feedback on a set of generated application files.
+Determine strictly which existing files need to be modified, which new files must be created, and which files should be deleted.
+Files that do not require any changes should NOT be listed in "modify".
+</task>
+
+<existing_files>
+{file_summary}
+</existing_files>
+
+<reviewer_feedback>
+{feedback}
+</reviewer_feedback>
+
+<context>
+{plan_text[:1000]}
+</context>
+
+<output_format>
+Return ONLY a JSON object with this exact shape:
+{{
+  "modify": ["filename1"],
+  "create": [{{"name": "new_filename", "purpose": "description"}}],
+  "delete": ["filename_to_remove"]
+}}
+No markdown fences, no extra text.
+</output_format>"""
+        try:
+            response = self._generate_with_retry(prompt, self._extract_json)
+            data = json.loads(response)
+            if isinstance(data, dict):
+                data.setdefault("modify", [])
+                data.setdefault("create", [])
+                data.setdefault("delete", [])
+                data["modify"] = [f for f in data["modify"] if f in existing_files]
+                return data
+        except Exception as exc:
+            logger.warning("Failed to classify affected files (%s); falling back to heuristic", exc)
+
+        modify = []
+        for fname in existing_files:
+            base = Path(fname).name.lower()
+            if base in feedback.lower() or fname.lower() in feedback.lower():
+                modify.append(fname)
+        if not modify:
+            modify = list(existing_files.keys())
+        return {"modify": modify, "create": [], "delete": []}
+
+    def _modify_file_with_feedback(
+            self,
+            file_name: str,
+            current_content: str,
+            feedback: str,
+            plan_text: str,
+    ) -> str:
+        """Modify an existing generated file based on targeted review feedback.
+
+        Args:
+            file_name: Name of the file to modify.
+            current_content: Current generated file contents.
+            feedback: Reviewer feedback.
+            plan_text: Base plan/spec context.
+
+        Returns:
+            Updated file contents.
+        """
+        prompt = f"""<role>
+You are an expert software engineer updating a specific file based on code review feedback.
+</role>
+
+<task>
+Update "{file_name}" according to the reviewer feedback.
+Apply the requested changes while preserving the rest of the file's implementation and logic.
+</task>
+
+<file_info>
+- Filename: {file_name}
+</file_info>
+
+<current_content>
+{current_content}
+</current_content>
+
+<feedback>
+{feedback}
+</feedback>
+
+<context>
+{plan_text[:1200]}
+</context>
+
+<instructions>
+1. Implement the requested feedback cleanly in "{file_name}".
+2. Preserve all existing working code, classes, endpoints, and configs not affected by the feedback.
+3. Keep code production-ready with valid syntax and imports.
+</instructions>
+
+<output_format>
+Return ONLY the raw updated file contents.
+- NO markdown code fences
+- NO explanations
+- NO headers
+</output_format>"""
+        extractor = self._get_extractor_for_file(file_name)
+        return self._generate_with_retry(prompt, extractor)
+
     def _apply_fixes_to_file(
             self,
             file_path: str,
@@ -877,10 +1184,14 @@ Return the COMPLETE fixed file contents. No markdown, no explanations.
 
         for attempt in range(self.max_retries):
             try:
+                log_llm_request("CodeGeneratorAgent", self._model, current_prompt, purpose=f"Code Generation (Attempt {attempt + 1})")
+                start_t = time.perf_counter()
                 response = self._client.models.generate_content(
                     model=self._model,
                     contents=current_prompt
                 )
+                duration = time.perf_counter() - start_t
+                log_llm_response("CodeGeneratorAgent", self._model, response.text, duration_sec=duration)
 
                 content = response.text.strip()
 
@@ -1231,4 +1542,23 @@ def generate_migration_code_files(
     )
     agent = CodeGeneratorAgent()
     diff = agent.generate_review_diff(plan, repo_path)
+    return diff.model_dump()
+
+
+# ADK tool function exposed to the agent / adk web
+def generate_code_from_spec(spec_json: str, target_platform: str = "CloudRun") -> dict:
+    """Generates complete application files implementing a SpecAgent API contract.
+
+    Args:
+        spec_json: JSON string of the SpecAgent output (as returned by
+            `spec_agent.generate_api_specification`), containing at least
+            title, summary, spec_yaml, endpoints, and data_models.
+        target_platform: Target deployment platform, e.g. 'CloudRun'.
+
+    Returns:
+        Dictionary with branch_name, files_changed, diff_text, and file_contents (path -> generated content).
+    """
+    spec = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
+    agent = CodeGeneratorAgent()
+    diff = agent.generate_from_spec(spec, target_platform=target_platform)
     return diff.model_dump()

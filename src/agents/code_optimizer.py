@@ -24,8 +24,10 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +36,7 @@ from typing import Any, Callable, Iterable, Optional
 import yaml
 
 from src.utils.genai_client import build_genai_client
+from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -145,12 +148,12 @@ class CodeOptimizerAgent:
 
     def __init__(
             self,
-            model: str = "gemini-2.0-flash-exp",
+            model: str | None = None,
             max_fix_rounds: int = 8,
             max_test_rounds: int = 8,
             test_timeout: int = 600,
     ):
-        self._model = model
+        self._model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self._max_fix_rounds = max(1, max_fix_rounds)
         self._max_test_rounds = max(1, max_test_rounds)
         self._test_timeout = max(30, test_timeout)
@@ -350,6 +353,105 @@ class CodeOptimizerAgent:
 
     # Backwards-compatible alias with a more explicit pipeline name.
     optimize = fix_issues
+
+    def optimize_code_dict(
+            self,
+            code_files: dict[str, str],
+            review_report: dict,
+    ) -> tuple[dict[str, str], OptimizationReport]:
+        """Fix review findings directly on an in-memory dictionary of code files.
+
+        Args:
+            code_files: Mapping of relative file path -> file content string.
+            review_report: Output dictionary from ReviewAgent.
+
+        Returns:
+            Tuple of (updated_code_files_dict, OptimizationReport)
+        """
+        log_agent_call("CodeOptimizerAgent", "optimize_code_dict", f"files={len(code_files)}")
+        if not self.enabled or not code_files:
+            return code_files, OptimizationReport()
+
+        issues_by_file = self._group_issues_by_file(review_report)
+        if not issues_by_file:
+            report = OptimizationReport()
+            report.review_passed = True
+            return code_files, report
+
+        report = OptimizationReport()
+        updated_files = dict(code_files)
+
+        for rel_path, issues in issues_by_file.items():
+            matched_key = None
+            if rel_path in updated_files:
+                matched_key = rel_path
+            else:
+                for k in updated_files:
+                    if k.endswith(rel_path) or rel_path.endswith(k) or Path(k).name == Path(rel_path).name:
+                        matched_key = k
+                        break
+
+            if not matched_key:
+                continue
+
+            current_code = updated_files[matched_key]
+            original_code = current_code
+            fix_attempts: list[FixAttempt] = []
+            issues_fixed: list[str] = []
+            ext = Path(matched_key).suffix
+
+            issues_text = "\n".join(
+                [f"- {iss.get('message', '')} (Suggestion: {iss.get('suggestion', '')})" for iss in issues]
+            )
+
+            prompt = f"""<role>
+You are an expert software engineer fixing issues in a file.
+</role>
+
+<task>
+Fix all of the following issues in "{matched_key}":
+{issues_text}
+</task>
+
+<current_code>
+{current_code}
+</current_code>
+
+<instructions>
+1. Fix all listed issues cleanly and completely.
+2. Preserve all other code, comments, and functionality.
+3. Return ONLY the complete corrected file contents without markdown code fences.
+</instructions>"""
+            try:
+                log_llm_request("CodeOptimizerAgent", self._model, prompt, purpose=f"Self-heal {len(issues)} issue(s) in {matched_key}")
+                start_t = time.perf_counter()
+                resp = self._client.models.generate_content(
+                    model=self._model, contents=prompt
+                )
+                duration = time.perf_counter() - start_t
+                log_llm_response("CodeOptimizerAgent", self._model, resp.text, duration_sec=duration)
+                candidate = self._extract_code_from_response(resp.text or "")
+                if candidate and candidate != current_code and self._validate_code(candidate, ext):
+                    current_code = candidate
+                    issues_fixed = [iss.get("message", "") for iss in issues]
+                    fix_attempts.append(FixAttempt(strategy="gemini_review_fix_batch", success=True, changes_made="; ".join(issues_fixed)))
+            except Exception as exc:
+                fix_attempts.append(FixAttempt(strategy="gemini_review_fix_batch", success=False, changes_made="", error_message=str(exc)))
+
+            if current_code != original_code:
+                updated_files[matched_key] = current_code
+                report.files_fixed.append(matched_key)
+                report.results.append(OptimizationResult(
+                    file_path=matched_key,
+                    original_code=original_code,
+                    optimized_code=current_code,
+                    issues_fixed=issues_fixed,
+                    fix_attempts=fix_attempts,
+                    success=True,
+                ))
+
+        report.review_passed = len(report.files_failed) == 0
+        return updated_files, report
 
     def fix_test_failures(
             self,
@@ -643,10 +745,14 @@ Related project files:
 Return ONLY the COMPLETE corrected target-file code in a fenced code block.
 """
         try:
+            log_llm_request("CodeOptimizerAgent", self._model, prompt, purpose=f"Context-aware fix: {file_path.name}")
+            start_t = time.perf_counter()
             response = self._client.models.generate_content(
                 model=self._model,
                 contents=prompt,
             )
+            duration = time.perf_counter() - start_t
+            log_llm_response("CodeOptimizerAgent", self._model, response.text, duration_sec=duration)
             fixed_code = self._extract_code_from_response(response.text)
             if fixed_code and fixed_code != code:
                 return FixAttempt(
@@ -667,6 +773,68 @@ Return ONLY the COMPLETE corrected target-file code in a fenced code block.
                 changes_made="",
                 error_message=str(exc),
             )
+
+    def _attempt_whole_project_ai_fix(
+            self,
+            base_path: Path,
+            report: OptimizationReport,
+            test_output: str,
+    ) -> bool:
+        """Ask Gemini for whole-project fixes using multi-file XML format."""
+        context = self._build_project_context(base_path)
+        prompt = f"""You are a senior software engineer fixing automated test failures.
+
+Current failing test output:
+{test_output}
+
+Project files:
+{context}
+
+Return one or more complete file replacements using exactly this format:
+
+<FILE path="relative/path.py">
+```python
+complete file contents
+```
+</FILE>
+
+Only return files that actually need changes. Do not include explanations.
+"""
+        try:
+            log_llm_request("CodeOptimizerAgent", self._model, prompt, purpose="Whole-project multi-file fix")
+            start_t = time.perf_counter()
+            response = self._client.models.generate_content(
+                model=self._model,
+                contents=prompt,
+            )
+            duration = time.perf_counter() - start_t
+            log_llm_response("CodeOptimizerAgent", self._model, response.text, duration_sec=duration)
+            replacements = self._extract_file_replacements(response.text)
+            if not replacements:
+                return False
+
+            changed = False
+            for relative, new_code in replacements.items():
+                target = self._safe_project_path(base_path, relative)
+                if target is None or not target.exists():
+                    logger.warning("AI proposed invalid file path: %s", relative)
+                    continue
+                if new_code == target.read_text(encoding="utf-8"):
+                    continue
+                if not self._validate_code(new_code, target.suffix):
+                    logger.warning("Rejected invalid AI code for %s", relative)
+                    continue
+
+                target.write_text(new_code, encoding="utf-8")
+                changed = True
+                if relative not in report.files_fixed:
+                    report.files_fixed.append(relative)
+                logger.info("   🔧 Whole-project fix applied: %s", relative)
+
+            return changed
+        except Exception as exc:
+            logger.exception("AI whole-project diagnosis failed: %s", exc)
+            return False
 
     # =========================================================================
     # Test fixing
@@ -798,10 +966,14 @@ complete file contents
 Only return files that actually need changes. Do not include explanations.
 """
         try:
+            log_llm_request("CodeOptimizerAgent", self._model, prompt, purpose="Targeted AI test failure fix")
+            start_t = time.perf_counter()
             response = self._client.models.generate_content(
                 model=self._model,
                 contents=prompt,
             )
+            duration = time.perf_counter() - start_t
+            log_llm_response("CodeOptimizerAgent", self._model, response.text, duration_sec=duration)
             replacements = self._extract_file_replacements(response.text)
             if not replacements:
                 return False

@@ -10,22 +10,29 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+
+from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response
 
 logger = logging.getLogger(__name__)
 
 
-class GeminiClient:
-    def __init__(self, model: str = "gemini-2.5-pro", api_key: str | None = None) -> None:
-        self._model = model
-        self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
-        self._client = None
-        if self._api_key:
-            try:
-                from google import genai  # guarded: optional dependency
+def build_genai_client(api_key: str | None = None, model: str | None = None) -> tuple[any, str, str | None]:
+    selected_model = model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    key = api_key or os.environ.get("GEMINI_API_KEY")
+    if not key:
+        return None, selected_model, None
+    try:
+        from google import genai  # guarded: optional dependency
+        return genai.Client(api_key=key), selected_model, key
+    except Exception as exc:  # noqa: BLE001 - degrade, never crash
+        logger.warning("Gemini SDK unavailable (%s); using template fallback", exc)
+        return None, selected_model, None
 
-                self._client = genai.Client(api_key=self._api_key)
-            except Exception as exc:  # noqa: BLE001 - degrade, never crash
-                logger.warning("Gemini SDK unavailable (%s); using template fallback", exc)
+
+class GeminiClient:
+    def __init__(self, model: str | None = None, api_key: str | None = None) -> None:
+        self._client, self._model, self._api_key = build_genai_client(api_key=api_key, model=model)
 
     @property
     def enabled(self) -> bool:
@@ -45,7 +52,11 @@ class GeminiClient:
                 f"approval gate in 2-3 sentences.\nStep: {step_name}\n"
                 f"Result: {artifact}"
             )
+            log_llm_request("GeminiClient", self._model, prompt, purpose=f"Gate Summary ({step_name})")
+            start_t = time.perf_counter()
             resp = self._client.models.generate_content(model=self._model, contents=prompt)
+            duration = time.perf_counter() - start_t
+            log_llm_response("GeminiClient", self._model, resp.text, duration_sec=duration)
             return (resp.text or "").strip() or self._template_summary(step_name, artifact)
         except Exception as exc:  # noqa: BLE001 - degrade, never crash
             logger.warning("Gemini call failed (%s); using template fallback", exc)

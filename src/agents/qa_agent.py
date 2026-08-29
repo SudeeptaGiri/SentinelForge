@@ -16,11 +16,11 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any
-
+import time
 import yaml
 
 from src.utils.genai_client import build_genai_client
+from src.utils.terminal_logger import log_agent_call, log_llm_request, log_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +56,14 @@ class QAAgent:
     with a bounded retry mechanism to prevent infinite loops.
     """
     
-    def __init__(self, model: str = "gemini-2.5-pro", api_key: str | None = None):
+    def __init__(self, model: str | None = None, api_key: str | None = None):
         """Initialize the QA agent.
         
         Args:
-            model: Gemini model to use (default from agent_config.yaml)
+            model: Gemini model to use (default from agent_config.yaml or GEMINI_MODEL env)
             api_key: Deprecated for Person 4 flow (ADC is required)
         """
-        self._model = model
+        self._model = model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
         self._client = None
         self._auth_mode = None
@@ -185,7 +185,11 @@ def test_healthz(client):
 Return ONLY the complete test_app.py code following this pattern. No explanations."""
         
         try:
+            log_llm_request("QAAgent", self._model, prompt, purpose="Generate test suite")
+            start_t = time.perf_counter()
             response = self._client.models.generate_content(model=self._model, contents=prompt)
+            duration = time.perf_counter() - start_t
+            log_llm_response("QAAgent", self._model, response.text, duration_sec=duration)
             test_code = response.text.strip()
             
             if "```python" in test_code:
@@ -213,6 +217,7 @@ Return ONLY the complete test_app.py code following this pattern. No explanation
         Returns:
             Dictionary with test results and healing metadata
         """
+        log_agent_call("QAAgent", "run_tests_with_self_heal", f"path={code_path}")
         max_retries = max_retries or self.max_retries
         code_path = self._resolve_generated_output_root(code_path)
         if code_path is None:
@@ -435,10 +440,14 @@ Return ONLY the complete fixed file content, no explanations or markdown."""
 
         try:
             logger.info("🤖 Asking Gemini to generate fix...")
+            log_llm_request("QAAgent", self._model, prompt, purpose="Generate test failure fix")
+            start_t = time.perf_counter()
             response = self._client.models.generate_content(
                 model=self._model,
                 contents=prompt
             )
+            duration = time.perf_counter() - start_t
+            log_llm_response("QAAgent", self._model, response.text, duration_sec=duration)
             
             fix_code = response.text.strip()
             

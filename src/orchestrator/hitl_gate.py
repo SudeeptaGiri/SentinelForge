@@ -18,16 +18,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
 
 from src.models.schemas import GateDecision, GateRequest, StepStatus
+from src.utils.terminal_logger import log_gate_waiting, log_gate_decision
 
 logger = logging.getLogger("sentinelforge.gate")
 
-DEFAULT_GATE_TIMEOUT_SECONDS = 3600  # 1 hour — prevents zombie pipelines
+DEFAULT_GATE_TIMEOUT_SECONDS = int(os.getenv("GATE_TIMEOUT_SECONDS", "300"))  # 5 minutes default
+AUTO_APPROVE_GATES = os.getenv("AUTO_APPROVE_GATES", "false").lower() in ("1", "true", "yes")
 
 
 # ---------------------------------------------------------------------------
@@ -166,24 +169,31 @@ class AsyncHITLGateController:
                 log_msg=f"Awaiting human approval for '{step_name}': {summary}",
             )
 
-        loop = asyncio.get_event_loop()
-        future: asyncio.Future = loop.create_future()
-        self._pending[step_id] = future
-        try:
-            decision = await asyncio.wait_for(future, timeout=self.timeout_seconds)
-        except asyncio.TimeoutError:
-            decision = GateDecision(
-                step_id=step_id, approved=False,
-                feedback="Auto-rejected: gate timed out without human response",
-            )
-            logger.warning("Gate %d (%s) auto-rejected after %ds timeout",
-                           step_id, step_name, self.timeout_seconds)
-        finally:
-            self._pending.pop(step_id, None)
+        log_gate_waiting(step_id, step_name, summary, self.timeout_seconds)
+
+        if AUTO_APPROVE_GATES:
+            await asyncio.sleep(0.3)
+            decision = GateDecision(step_id=step_id, approved=True, feedback="auto-approved via AUTO_APPROVE_GATES")
+        else:
+            loop = asyncio.get_event_loop()
+            future: asyncio.Future = loop.create_future()
+            self._pending[step_id] = future
+            try:
+                decision = await asyncio.wait_for(future, timeout=self.timeout_seconds)
+            except asyncio.TimeoutError:
+                decision = GateDecision(
+                    step_id=step_id, approved=False,
+                    feedback="Auto-rejected: gate timed out without human response",
+                )
+                logger.warning("Gate %d (%s) auto-rejected after %ds timeout",
+                               step_id, step_name, self.timeout_seconds)
+            finally:
+                self._pending.pop(step_id, None)
 
         entry.decided_at = time.time()
         entry.approved = decision.approved
         entry.feedback = decision.feedback
+        log_gate_decision(step_id, step_name, decision.approved, decision.feedback or "", entry.wait_seconds)
         logger.info("Gate %d (%s) %s (%.1fs wait)", step_id, step_name,
                     "APPROVED" if decision.approved else "REJECTED", entry.wait_seconds)
 
