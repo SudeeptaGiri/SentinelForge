@@ -12,16 +12,23 @@ authors = ["SentinelForge Team"]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-fastapi = "*"
-uvicorn = "*"
-pydantic = "*"
-google-genai = "*"
-jinja2 = "*"
-pyyaml = "*"
-mcp = "<2"
+fastapi = "^0.136.0"
+uvicorn = "^0.46.0"
+pydantic = "^2.13.0"
+google-adk = ">=1.33.0"
+google-genai = ">=1.75.0"
+google-auth = ">=2.52.0"
+google-cloud-aiplatform = ">=1.151.0"
+google-cloud-logging = ">=3.15.0"
+mcp = ">=1.27.0,<2"
+GitPython = ">=3.1.50"
+jinja2 = "^3.1.6"
+pyyaml = "^6.0.3"
+requests = "^2.33.1"
+python-dotenv = "^1.2.2"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "*"
+pytest = "^9.1.0"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

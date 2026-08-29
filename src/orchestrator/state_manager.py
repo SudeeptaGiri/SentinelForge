@@ -51,6 +51,13 @@ class PipelineSession:
     history: list[dict[str, Any]] = field(default_factory=list)
     result: dict[str, Any] | None = None
     error: str | None = None
+    analysis_data: dict[str, Any] | None = None   # populated after step 1
+    graph_nodes: list[dict] | None = None          # vis.js node list for UI graph
+    graph_edges: list[dict] | None = None          # vis.js edge list for UI graph
+    intent: str = "migrate_cloud"
+    spec_data: dict[str, Any] | None = None        # populated after step 2 (SpecAgent)
+    app_name: str = ""
+    repo_path: str = ""
 
 
 class SessionStateManager:

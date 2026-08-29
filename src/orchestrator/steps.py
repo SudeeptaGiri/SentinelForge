@@ -13,21 +13,62 @@ from src.models.schemas import (
 
 
 def analysis_step(ctx: PipelineContext, feedback: str | None) -> dict:
-    return {"summary": "Stateless Flask API on a GCE VM, no autoscaling",
-            "detected_platform": "GCE"}
+    """Analyzes the legacy repository AST, REST routes, and deployment scripts."""
+    repo_path = "fixtures/sample_legacy_app"
+    if ctx.workload and getattr(ctx.workload, "repo_path", None):
+        repo_path = ctx.workload.repo_path
+
+    try:
+        from src.agents.analysis_agent import AnalysisAgent
+        agent = AnalysisAgent()
+        result = agent.analyze_codebase(repo_path)
+        summary = result.summary
+        if feedback:
+            summary = f"{summary} [Feedback: {feedback}]"
+        routes = result.graph_summary.get("routes", []) if isinstance(result.graph_summary, dict) else []
+        return {
+            "detected_platform": result.detected_platform,
+            "summary": summary,
+            "architecture_type": result.architecture_type,
+            "framework": result.framework,
+            "dependencies": result.dependencies,
+            "files_of_interest": result.files_of_interest,
+            "has_dockerfile": result.has_dockerfile,
+            "has_autoscaling": result.has_autoscaling,
+            "endpoints": routes,
+            "recommendations": result.recommendations,
+            "workload_spec": result.workload_spec.model_dump() if result.workload_spec else None,
+        }
+    except Exception as exc:
+        summary = "Stateless Flask API on a GCE VM, no autoscaling"
+        if feedback:
+            summary = f"{summary} [Feedback: {feedback}]"
+        return {
+            "summary": summary,
+            "detected_platform": "GCE",
+            "files_of_interest": ["app.py", "deploy_gce.sh"],
+            "endpoints": [{"path": "/health", "method": "GET"}, {"path": "/api/v1/orders", "method": "GET"}],
+            "fallback": True,
+            "error": str(exc),
+        }
 
 
 def proposal_step(ctx: PipelineContext, feedback: str | None) -> MigrationPlan:
-    baseline = CostEstimate(platform="GCE", monthly_cost_usd=120.0,
+    analysis = ctx.get("analysis") or {}
+    platform = analysis.get("detected_platform", "GCE")
+    baseline = CostEstimate(platform=platform, monthly_cost_usd=120.0,
                             breakdown={"vcpu": 90.0, "ram": 30.0})
     target = CostEstimate(platform="CloudRun", monthly_cost_usd=48.0,
                           breakdown={"vcpu": 30.0, "ram": 18.0})
     savings = baseline.monthly_cost_usd - target.monthly_cost_usd
+    rationale = "Stateless + bursty traffic fits serverless Cloud Run."
+    if feedback:
+        rationale += f" (Adjusted per reviewer feedback: {feedback})"
     return MigrationPlan(
         baseline=baseline, target=target, target_platform="CloudRun",
         monthly_savings_usd=savings,
         savings_pct=round(savings / baseline.monthly_cost_usd * 100, 1),
-        rationale="Stateless + bursty traffic fits serverless Cloud Run.",
+        rationale=rationale,
     )
 
 
