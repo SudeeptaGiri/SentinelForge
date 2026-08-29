@@ -42,7 +42,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ── HEADER ── */
+/* ΓöÇΓöÇ HEADER ΓöÇΓöÇ */
 .app-header {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -111,7 +111,7 @@ body {
   color: var(--text-secondary);
 }
 
-/* ── BUTTONS ── */
+/* ΓöÇΓöÇ BUTTONS ΓöÇΓöÇ */
 .btn {
   font-family: 'Inter', sans-serif;
   font-size: 14px;
@@ -173,7 +173,7 @@ body {
   border-radius: 10px;
 }
 
-/* ── PHASE CARDS ── */
+/* ΓöÇΓöÇ PHASE CARDS ΓöÇΓöÇ */
 .phase-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -207,7 +207,7 @@ body {
   box-shadow: 0 2px 8px rgba(45, 164, 78, 0.3);
 }
 
-/* ── FORMS ── */
+/* ΓöÇΓöÇ FORMS ΓöÇΓöÇ */
 .setup-form {
   max-width: 800px;
 }
@@ -290,7 +290,7 @@ body {
   color: var(--text-primary);
 }
 
-/* ── ANALYSIS ── */
+/* ΓöÇΓöÇ ANALYSIS ΓöÇΓöÇ */
 .analysis-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -462,7 +462,7 @@ body {
   vertical-align: middle;
 }
 
-/* ── PIPELINE ── */
+/* ΓöÇΓöÇ PIPELINE ΓöÇΓöÇ */
 .pipeline-grid {
   display: flex;
   gap: 16px;
@@ -600,7 +600,7 @@ body {
   color: var(--blue);
 }
 
-/* ── STEPPER ── */
+/* ΓöÇΓöÇ STEPPER ΓöÇΓöÇ */
 .stepper-header h3 {
   font-size: 15px;
   font-weight: 700;
@@ -727,7 +727,7 @@ body {
 }
 
 .step.status-completed .step-icon::after {
-  content: '✓';
+  content: 'Γ£ô';
 }
 
 .step.status-completed .step-status {
@@ -757,7 +757,7 @@ body {
   }
 }
 
-/* ── INLINE GATE ── */
+/* ΓöÇΓöÇ INLINE GATE ΓöÇΓöÇ */
 .inline-gate {
   margin-top: 12px;
   background: rgba(56, 139, 253, 0.05);
@@ -829,7 +829,7 @@ body {
   overflow-x: auto;
 }
 
-/* ── HISTORY PANEL ── */
+/* ΓöÇΓöÇ HISTORY PANEL ΓöÇΓöÇ */
 .history-panel {
   position: absolute;
   top: calc(100% + 10px);
@@ -888,7 +888,7 @@ body {
   color: var(--text-primary);
 }
 
-/* ── UTILITIES ── */
+/* ΓöÇΓöÇ UTILITIES ΓöÇΓöÇ */
 .muted {
   color: var(--text-tertiary);
   font-size: 12px;
@@ -898,7 +898,7 @@ body {
   display: none !important;
 }
 
-/* ── RESPONSIVE ── */
+/* ΓöÇΓöÇ RESPONSIVE ΓöÇΓöÇ */
 @media (max-width: 1200px) {
   .phase-card {
     padding: 24px;
