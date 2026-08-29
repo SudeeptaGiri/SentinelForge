@@ -80,8 +80,7 @@ def main():
             logger.warning("⚠️  Review agent disabled, skipping reviews")
             review_report = None
         else:
-            # Pass project root, reviewer will look for generated_output/src
-            review_report = reviewer.review_code(base_path=Path.cwd(), mode="both")
+            review_report = reviewer.review_code(base_path=output_path, mode="both")
             
             logger.info(f"Normal review: {len(review_report.normal_issues)} issues")
             logger.info(f"Epic review: {len(review_report.epic_issues)} issues")
@@ -101,7 +100,11 @@ def main():
                         
                         opt_report = optimizer.fix_issues(
                             review_report=review_report.to_dict(),
-                            base_path=Path.cwd()
+                            base_path=output_path,
+                            review_callback=lambda generated_root: reviewer.review_code(
+                                base_path=generated_root,
+                                mode="both",
+                            ).to_dict(),
                         )
                         
                         logger.info(f"✅ Fixed: {len(opt_report.files_fixed)} files")

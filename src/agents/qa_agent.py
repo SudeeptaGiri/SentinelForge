@@ -20,10 +20,11 @@ from typing import Any
 
 import yaml
 
-from src.mcp_servers.server_git import GitOperations
 from src.utils.genai_client import build_genai_client
 
 logger = logging.getLogger(__name__)
+
+GENERATED_OUTPUT_DIR = "generated_output"
 
 
 class TestResult:
@@ -114,7 +115,9 @@ class QAAgent:
         Returns:
             Dictionary with test results and healing metadata
         """
-        code_path = Path(code_path)
+        code_path = self._resolve_generated_output_root(code_path)
+        if code_path is None:
+            raise ValueError("code_path must point to generated_output or its project root")
         
         # Generate tests if plan provided
         if plan_text and self.enabled:
@@ -133,12 +136,12 @@ class QAAgent:
         (tests_dir / "__init__.py").write_text("", encoding='utf-8')
         
         # Read actual generated app to understand its structure
-        app_file = code_path / "app.py"
+        app_file = self._locate_primary_app_file(code_path)
         if not app_file.exists():
             logger.error("app.py not found, cannot generate tests")
             return
         
-        app_code = app_file.read_text()
+        app_code = app_file.read_text(encoding='utf-8')
         
         prompt = f"""Generate pytest test cases based on this plan and the actual generated code.
 
@@ -151,11 +154,11 @@ ACTUAL GENERATED CODE (app.py):
 ```
 
 CRITICAL REQUIREMENTS:
-1. Import app correctly: from app import app (since app.py is in parent directory)
+1. Import app correctly based on the actual file layout. Prefer: from src.app import app
 2. Use pytest fixture for Flask test client
 3. Test /healthz endpoint returns 200 and {{"status": "healthy"}}
 4. Test hello_world() function if it exists
-5. Use sys.path.insert to ensure imports work from tests/ subdirectory
+5. Use sys.path.insert only if needed. Prefer package imports that match generated_output/src.
 6. Keep tests simple and focused
 
 EXAMPLE STRUCTURE:
@@ -165,7 +168,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
-from app import app
+from src.app import app
 
 @pytest.fixture
 def client():
@@ -211,7 +214,9 @@ Return ONLY the complete test_app.py code following this pattern. No explanation
             Dictionary with test results and healing metadata
         """
         max_retries = max_retries or self.max_retries
-        code_path = Path(code_path)
+        code_path = self._resolve_generated_output_root(code_path)
+        if code_path is None:
+            raise ValueError("code_path must point to generated_output or its project root")
         
         logger.info(f"Starting test execution with self-healing (max {max_retries} retries)")
         
@@ -399,25 +404,25 @@ Return ONLY the complete test_app.py code following this pattern. No explanation
         Returns:
             Fix code as string, or None if generation failed
         """
-        # Read the current app.py
-        app_file = code_path / "app.py"
+        # Read the current primary app module inside generated_output
+        app_file = self._locate_primary_app_file(code_path)
         if not app_file.exists():
             return None
         
-        current_code = app_file.read_text()
+        current_code = app_file.read_text(encoding='utf-8')
         
         prompt = f"""You are a QA self-healing agent. A test has failed and you need to fix the code.
 
 TEST FAILURE OUTPUT:
 {error_context}
 
-CURRENT CODE (app.py):
+CURRENT CODE ({app_file.relative_to(code_path)}):
 {current_code}
 
 TASK:
 1. Analyze the test failure
 2. Identify what's missing or broken
-3. Generate the COMPLETE fixed version of app.py
+3. Generate the COMPLETE fixed version of the affected file
 4. The fix should be minimal and targeted
 
 CONSTRAINTS:
@@ -426,7 +431,7 @@ CONSTRAINTS:
 - Follow Flask best practices
 - Ensure the fix is production-ready
 
-Return ONLY the complete fixed app.py file content, no explanations or markdown."""
+Return ONLY the complete fixed file content, no explanations or markdown."""
 
         try:
             logger.info("🤖 Asking Gemini to generate fix...")
@@ -465,11 +470,11 @@ Return ONLY the complete fixed app.py file content, no explanations or markdown.
         """
         logger.info("Using fallback pattern-based fix generation")
         
-        app_file = code_path / "app.py"
+        app_file = self._locate_primary_app_file(code_path)
         if not app_file.exists():
             return None
         
-        current_code = app_file.read_text()
+        current_code = app_file.read_text(encoding='utf-8')
         error_lower = error_context.lower()
         
         # Pattern 1: Missing /healthz endpoint (multiple detection methods)
@@ -528,10 +533,13 @@ def healthz():
             True if fix was applied successfully
         """
         try:
-            app_file = code_path / "app.py"
+            app_file = self._locate_primary_app_file(code_path)
+            if not app_file.exists():
+                logger.error("Primary app file not found inside generated_output")
+                return False
             
             # Backup current version (simple file backup, not git)
-            backup_file = code_path / "app.py.backup"
+            backup_file = app_file.with_suffix(app_file.suffix + ".backup")
             if app_file.exists():
                 backup_file.write_text(app_file.read_text(encoding='utf-8'), encoding='utf-8')
             
@@ -573,6 +581,29 @@ Status: Success
         except Exception as exc:
             logger.error(f"Failed to apply fix: {exc}")
             return False
+
+    def _resolve_generated_output_root(self, code_path: str | Path) -> Path | None:
+        """Accept either project root or generated_output and return generated_output."""
+        path = Path(code_path).resolve()
+        if path.name == GENERATED_OUTPUT_DIR and path.is_dir():
+            return path
+
+        candidate = path / GENERATED_OUTPUT_DIR
+        if candidate.exists() and candidate.is_dir():
+            return candidate.resolve()
+
+        return None
+
+    def _locate_primary_app_file(self, code_path: Path) -> Path:
+        """Locate the generated app entrypoint strictly inside generated_output."""
+        candidates = [
+            code_path / "src" / "app.py",
+            code_path / "app.py",
+        ]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return candidates[0]
     
     def _generate_report(
         self,

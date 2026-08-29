@@ -13,10 +13,8 @@ Returns empty report if no issues found (0 issues is valid).
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import logging
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,10 +26,8 @@ from src.utils.genai_client import build_genai_client
 logger = logging.getLogger(__name__)
 
 # Configuration
-REVIEW_TARGET_DIRS = [
-    "generated_output/src",    # Source code
-    "generated_output/tests"   # Test files for import validation
-]
+GENERATED_OUTPUT_DIR = "generated_output"
+REVIEW_TARGET_SUBDIRS = ("src", "tests")
 
 
 # =============================================================================
@@ -168,7 +164,7 @@ class ReviewAgent:
             mode: str = "both",
             check_imports: bool = True
     ) -> ReviewReport:
-        """Review code in generated_output directories.
+        """Review code in the generated_output directory only.
         
         Args:
             base_path: Base project path (defaults to current directory)
@@ -182,24 +178,23 @@ class ReviewAgent:
             logger.warning("ReviewAgent disabled - ADC auth required")
             return ReviewReport()
 
-        # Determine base path
-        if base_path is None:
-            base_path = Path.cwd()
-        else:
-            base_path = Path(base_path)
+        generated_root = self._resolve_generated_output_root(base_path)
+        if generated_root is None:
+            logger.warning("generated_output directory not found")
+            return ReviewReport()
         
         report = ReviewReport()
         all_code_files = {}
         
         # Collect files from all review directories
-        for target_dir in REVIEW_TARGET_DIRS:
-            review_dir = base_path / target_dir
+        for subdir in REVIEW_TARGET_SUBDIRS:
+            review_dir = generated_root / subdir
             if review_dir.exists():
                 logger.info(f"🔍 Scanning: {review_dir}")
                 files = self._collect_code_files(review_dir)
-                # Store with full relative path from base
+                # Store with full relative path from generated_output root
                 for file_path, content in files.items():
-                    full_path = str(Path(target_dir) / file_path)
+                    full_path = str(Path(subdir) / file_path)
                     all_code_files[full_path] = content
         
         if not all_code_files:
@@ -211,7 +206,7 @@ class ReviewAgent:
         # Check imports first (catches critical issues)
         if check_imports:
             logger.info("🔍 Validating imports...")
-            import_issues = self._validate_imports(all_code_files, base_path)
+            import_issues = self._validate_imports(all_code_files, generated_root)
             if import_issues:
                 report.epic_issues.extend(import_issues)
                 logger.info(f"   Found {len(import_issues)} import issues")
@@ -230,10 +225,24 @@ class ReviewAgent:
             logger.info(f"   Found {len(epic_issues)} security/architecture issues")
 
         # Save report
-        self._save_report(report, base_path / "generated_output")
+        self._save_report(report, generated_root)
         self._log_summary(report)
 
         return report
+
+    def _resolve_generated_output_root(self, base_path: str | Path | None) -> Path | None:
+        """Resolve the generated_output directory and refuse anything outside it."""
+        base = Path(base_path) if base_path is not None else Path.cwd()
+        base = base.resolve()
+
+        if base.name == GENERATED_OUTPUT_DIR and base.is_dir():
+            return base
+
+        candidate = base / GENERATED_OUTPUT_DIR
+        if candidate.exists() and candidate.is_dir():
+            return candidate.resolve()
+
+        return None
 
     # =========================================================================
     # File Collection
@@ -257,7 +266,7 @@ class ReviewAgent:
     # Import Validation
     # =========================================================================
 
-    def _validate_imports(self, code_files: dict[str, str], base_path: Path) -> list[ReviewIssue]:
+    def _validate_imports(self, code_files: dict[str, str], generated_root: Path) -> list[ReviewIssue]:
         """Validate that all imports can be resolved."""
         issues = []
         
@@ -272,9 +281,9 @@ class ReviewAgent:
                 
                 # Check each import
                 for import_line, module_name in imports:
-                    if not self._can_resolve_import(module_name, file_path, base_path):
+                    if not self._can_resolve_import(module_name, file_path, generated_root):
                         # Try to suggest correct import
-                        suggestion = self._suggest_import_fix(module_name, file_path, base_path)
+                        suggestion = self._suggest_import_fix(module_name, file_path, generated_root)
                         
                         issues.append(ReviewIssue(
                             severity="critical",
@@ -313,7 +322,7 @@ class ReviewAgent:
         
         return imports
 
-    def _can_resolve_import(self, module_name: str, file_path: str, base_path: Path) -> bool:
+    def _can_resolve_import(self, module_name: str, file_path: str, generated_root: Path) -> bool:
         """Check if an import can be resolved."""
         # Skip standard library and third-party packages
         if module_name.split('.')[0] in ['pytest', 'flask', 'os', 'sys', 'json', 'pathlib', 'datetime']:
@@ -323,28 +332,31 @@ class ReviewAgent:
         if module_name.startswith('src.') or module_name.startswith('app.'):
             # Try to find the actual file
             possible_paths = [
-                base_path / "generated_output" / module_name.replace('.', '/') + '.py',
-                base_path / "generated_output" / module_name.replace('.', '/') / '__init__.py',
+                generated_root / f"{module_name.replace('.', '/')}.py",
+                generated_root / module_name.replace('.', '/') / '__init__.py',
             ]
             
             return any(p.exists() for p in possible_paths)
         
         return True  # Assume other imports are okay
 
-    def _suggest_import_fix(self, module_name: str, file_path: str, base_path: Path) -> str:
+    def _suggest_import_fix(self, module_name: str, file_path: str, generated_root: Path) -> str:
         """Suggest correct import based on file structure."""
         # Common fixes
         if module_name.startswith('app.'):
             # Check if src.app exists
-            app_file = base_path / "generated_output" / "src" / "app.py"
+            app_file = generated_root / "src" / "app.py"
             if app_file.exists():
                 fixed_import = module_name.replace('app.', 'src.app.')
                 return f"Change import to: from {fixed_import} OR from src.app import ..."
+        if module_name == 'app':
+            app_file = generated_root / "src" / "app.py"
+            if app_file.exists():
+                return "Change import to: from src.app import ..."
         
         # Look for similar files
-        gen_output = base_path / "generated_output"
-        if gen_output.exists():
-            src_files = list(gen_output.rglob("*.py"))
+        if generated_root.exists():
+            src_files = list(generated_root.rglob("*.py"))
             module_parts = module_name.split('.')
             target = module_parts[-1]
             
@@ -352,7 +364,7 @@ class ReviewAgent:
             matches = [f for f in src_files if f.stem == target]
             if matches:
                 # Suggest first match
-                rel_path = matches[0].relative_to(gen_output)
+                rel_path = matches[0].relative_to(generated_root)
                 suggested = str(rel_path).replace('/', '.').replace('.py', '')
                 return f"Try: from {suggested} import ..."
         
@@ -499,11 +511,11 @@ If no security or architectural issues, return: []
         except json.JSONDecodeError:
             import re
             # Try to find JSON in markdown
-            match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', text, re.DOTALL)
+            match = re.search(r'```(?:json)?\s*(\[.*?])\s*```', text, re.DOTALL)
             if match:
                 return json.loads(match.group(1))
             # Try to find raw array
-            match = re.search(r'\[.*?\]', text, re.DOTALL)
+            match = re.search(r'\[.*?]', text, re.DOTALL)
             if match:
                 try:
                     return json.loads(match.group(0))
@@ -511,9 +523,9 @@ If no security or architectural issues, return: []
                     pass
             return []
 
-    def _save_report(self, report: ReviewReport, review_dir: Path) -> None:
+    def _save_report(self, report: ReviewReport, generated_root: Path) -> None:
         """Save review report."""
-        report_file = review_dir.parent / "REVIEW_REPORT.json"
+        report_file = generated_root / "REVIEW_REPORT.json"
         report_file.write_text(json.dumps(report.to_dict(), indent=2), encoding='utf-8')
         logger.info(f"📄 Report saved: {report_file}")
 
