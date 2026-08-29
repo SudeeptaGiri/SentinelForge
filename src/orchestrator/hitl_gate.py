@@ -205,9 +205,14 @@ class AsyncHITLGateController:
     def get_audit_log(self) -> list[dict]:
         return [
             {
-                "step_id": e.step_id, "gate_name": e.gate_name, "summary": e.summary,
-                "tools_used": e.tools_used, "approved": e.approved,
-                "feedback": e.feedback, "wait_seconds": e.wait_seconds,
+                "step_id": e.step_id,
+                "gate_name": e.gate_name,
+                "summary": e.summary,
+                "tools_used": e.tools_used,
+                "approved": e.approved,
+                "feedback": e.feedback,
+                "wait_seconds": e.wait_seconds,
+                "artifact": e.artifact,
             }
             for e in self.audit_log
         ]

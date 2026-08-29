@@ -1,3 +1,4 @@
+import asyncio
 import builtins
 
 import pytest
@@ -68,8 +69,6 @@ def test_terminal_channel_uppercase_yes_approves(monkeypatch):
 def test_channel_is_abstract():
     assert issubclass(TerminalApprovalChannel, ApprovalChannel)
 
-
-import asyncio
 
 def _run(coro):
     return asyncio.run(coro)

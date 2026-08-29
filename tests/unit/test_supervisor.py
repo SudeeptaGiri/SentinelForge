@@ -1,3 +1,5 @@
+import asyncio as _asyncio
+
 from src.models.schemas import GateDecision, PipelineContext, PipelineStep, RunStatus, WorkloadSpec
 from src.orchestrator.gemini_client import GeminiClient
 from src.orchestrator.hitl_gate import HITLGateController, ScriptedApprovalChannel
@@ -77,8 +79,6 @@ def test_route_classifies_then_runs(capsys):
     assert sup.route("cut my cloud bill", pipeline_id="p1", workload=WL) == RunStatus.COMPLETED
 
 
-import asyncio as _asyncio
-
 def _run_async(coro):
     return _asyncio.run(coro)
 
@@ -109,7 +109,6 @@ def test_async_supervisor_retries_on_rejection():
 
         # First gate: reject; second gate: approve all remaining
         call_count = [0]
-        original_gate = sup._request_gate
         async def patched_gate(step_id, gate_name, summary, artifact=None):
             call_count[0] += 1
             if step_id == 2 and call_count[0] == 1:
